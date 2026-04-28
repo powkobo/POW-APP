@@ -3,3 +3,4 @@ dropbox
 pypdf
 rapidfuzz
 gunicorn
+requests
