@@ -37,7 +37,7 @@ HTML_TEMPLATE = '''
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- FIXED HTMX LINK BELOW - PREVENTS MIME TYPE ERROR -->
+    <!-- FIXED SCRIPT LINK BELOW - THIS STOPS THE CONSOLE ERROR -->
     <script src="https://unpkg.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
@@ -46,7 +46,7 @@ HTML_TEMPLATE = '''
         .btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; min-height: 80px; margin-top: 20px; }
+        #status-box { font-size: 11px; background: #333; color: #0f0; padding: 10px; border-radius: 5px; min-height: 40px; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -82,7 +82,7 @@ HTML_TEMPLATE = '''
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
 
-    <div id="debug-log">
+    <div id="status-box">
         <strong>Status:</strong> <span id="status-text">{{ status_msg }}</span>
     </div>
 
@@ -106,6 +106,7 @@ def index():
     folders, status_msg = [], "Connecting..."
     if dbx:
         try:
+            # We look at root "" for Set 1, Set 2, Set 3
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
             status_msg = f"Connected! Found {len(folders)} sets."
@@ -121,16 +122,16 @@ def update_library():
     if dbx and path:
         try:
             res = dbx.files_list_folder(path)
-            subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-            for sub in subs:
-                # We search every instrument folder until we find your PDFs
-                songs_res = dbx.files_list_folder(sub.path_lower)
-                pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
-                if pdf_names:
-                    for name in pdf_names:
-                        html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
-                    break 
-            if not html: html = "<p>No PDFs found in instrument folders.</p>"
+            # Find the FIRST instrument folder that actually has PDFs
+            for entry in res.entries:
+                if isinstance(entry, dropbox.files.FolderMetadata):
+                    songs_res = dbx.files_list_folder(entry.path_lower)
+                    pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
+                    if pdf_names:
+                        for name in pdf_names:
+                            html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
+                        break 
+            if not html: html = "<p>No PDFs found in any instrument folders.</p>"
         except Exception as e: html = f"<p style='color:red;'>Error: {e}</p>"
     return html
 
@@ -180,7 +181,7 @@ def build():
             out.seek(0)
             dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
         session['setlist'] = []
-        return f"<h1>Success!</h1><p>Created in /Generated/{set_name}</p><a href='/'>Back</a>"
+        return f"<h1>Success!</h1><p>Check Dropbox: /Generated/{set_name}</p><a href='/'>Back</a>"
     except Exception as e: return f"<h1>Error</h1><p>{str(e)}</p>"
 
 if __name__ == '__main__':
