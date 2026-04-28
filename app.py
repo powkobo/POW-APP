@@ -1,4 +1,4 @@
-import os, io, dropbox, re, requests
+import os, io, dropbox, re
 from flask import Flask, render_template_string, request, session
 from pypdf import PdfWriter
 
@@ -37,7 +37,8 @@ HTML_TEMPLATE = '''
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script>{{ htmx_code|safe }}</script>
+    <!-- RELIABLE CDN LINK -->
+    <script src="https://cloudflare.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
@@ -79,7 +80,7 @@ HTML_TEMPLATE = '''
             if (evt.detail.target.id === 'library-container') {
                 var folder = document.querySelector('select[name="folder_path"]').value;
                 document.getElementById('active_folder').value = folder;
-                document.getElementById('status-text').innerHTML = "Loaded: " + folder;
+                document.getElementById('status-text').innerHTML = "Loaded Library: " + folder;
             }
         });
     </script>
@@ -89,12 +90,6 @@ HTML_TEMPLATE = '''
 
 @app.route('/')
 def index():
-    # Fetch HTMX code server-side to avoid Edge tracking blocks
-    try:
-        htmx_code = requests.get("https://cloudflare.com").text
-    except:
-        htmx_code = ""
-        
     dbx = get_dbx()
     session.setdefault('setlist', [])
     folders, status_msg = [], "Connecting..."
@@ -105,8 +100,7 @@ def index():
             status_msg = f"Connected! Found {len(folders)} sets."
         except Exception as e: status_msg = f"Dropbox Error: {e}"
     else: status_msg = "Error: Refresh Token Missing."
-    
-    return render_template_string(HTML_TEMPLATE, htmx_code=htmx_code, folders=folders, setlist_html=render_setlist_html(session['setlist']), status_msg=status_msg)
+    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), status_msg=status_msg)
 
 @app.route('/update-library', methods=['POST'])
 def update_library():
@@ -116,16 +110,16 @@ def update_library():
     if dbx and path:
         try:
             res = dbx.files_list_folder(path)
-            subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-            for sub in subs:
-                songs_res = dbx.files_list_folder(sub.path_lower)
-                pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
-                if pdf_names:
-                    for name in pdf_names:
-                        html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
-                    break 
-            if not html: html = "<p>No PDFs found in instrument folders.</p>"
-        except Exception as e: html = f"<p style='color:red;'>Error: {e}</p>"
+            for entry in res.entries:
+                if isinstance(entry, dropbox.files.FolderMetadata):
+                    songs_res = dbx.files_list_folder(entry.path_lower)
+                    pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
+                    if pdf_names:
+                        for name in pdf_names:
+                            html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
+                        break 
+            if not html: html = "<p>No PDFs found.</p>"
+        except Exception as e: html = f"<p>Error: {e}</p>"
     return html
 
 @app.route('/add', methods=['POST'])
