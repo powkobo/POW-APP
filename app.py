@@ -3,7 +3,6 @@ from flask import Flask, render_template_string, request, session
 from pypdf import PdfWriter
 
 app = Flask(__name__)
-# Uses Render secret or a fallback
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-band-2026")
 
 def get_dbx():
@@ -15,7 +14,6 @@ def get_dbx():
         )
     except: return None
 
-# --- UI TEMPLATE ---
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -31,13 +29,14 @@ HTML_TEMPLATE = '''
         .btn-clear { background: #6c757d; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+        .troubleshooter { font-size: 11px; color: #777; background: #eee; padding: 10px; border-radius: 5px; margin-top: 30px; }
     </style>
 </head>
 <body>
     <h1>🎺 POW Set Builder</h1>
     
     <div class="card">
-        <h3>1. Select Active Set Folder</h3>
+        <h3>1. Select Set Folder</h3>
         <select name="folder_path" hx-post="/update-library" hx-target="#library-container">
             <option value="">-- Choose a Set --</option>
             {% for folder in folders %}
@@ -49,7 +48,7 @@ HTML_TEMPLATE = '''
     <div class="card">
         <h3>2. Library (Click +)</h3>
         <div id="library-container" style="max-height: 250px; overflow-y: auto;">
-            <p style="color:#999;">Select a Set above to load music.</p>
+            <p style="color:#999;">Select a Set above.</p>
         </div>
     </div>
 
@@ -61,9 +60,14 @@ HTML_TEMPLATE = '''
 
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder" value="">
-        <input type="text" name="set_name" placeholder="Output Folder Name (e.g. Christmas 2026)" required>
+        <input type="text" name="set_name" placeholder="Output Folder Name" required>
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
+
+    <div class="troubleshooter">
+        <strong>Path Troubleshooter:</strong><br>
+        Items detected at root: {{ debug_list }}
+    </div>
 
     <script>
         document.body.addEventListener('htmx:afterRequest', function(evt) {
@@ -76,6 +80,7 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
+# [Rest of your Partial templates remain the same as previous turn]
 LIBRARY_PARTIAL = '''
 {% for song in library %}
 <div class="item">
@@ -83,7 +88,7 @@ LIBRARY_PARTIAL = '''
     <button class="btn-add" hx-post="/add" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">+</button>
 </div>
 {% endfor %}
-{% if not library %}<p style="color:#999;">No PDFs found in this Set.</p>{% endif %}
+{% if not library %}<p style="color:#999;">No PDFs found.</p>{% endif %}
 '''
 
 INNER_TEMPLATE = '''
@@ -101,17 +106,20 @@ def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
     folders = []
+    debug_list = "No Connection"
+    
     if dbx:
         try:
-            # Scans the absolute root "" for any folders (Set 1, Set 2, Christmas, etc.)
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
+            debug_list = ", ".join([e.name for e in res.entries]) if res.entries else "Folder is empty"
         except Exception as e:
-            print(f"Index Error: {e}")
+            debug_list = f"Error: {str(e)}"
                 
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
-                                 folders=folders, setlist=session['setlist'])
+                                 folders=folders, setlist=session['setlist'], debug_list=debug_list)
 
+# [Remaining routes: /update-library, /add, /remove, /clear, /build remain same as previous version]
 @app.route('/update-library', methods=['POST'])
 def update_library():
     dbx = get_dbx()
@@ -119,7 +127,6 @@ def update_library():
     library = []
     if dbx and folder_path:
         try:
-            # Looks inside the first instrument folder found to build the library list
             res = dbx.files_list_folder(folder_path)
             subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
             if subs:
@@ -154,33 +161,25 @@ def build():
     dbx = get_dbx()
     setlist, set_name = session.get('setlist', []), request.form.get('set_name')
     active_folder = request.form.get('active_folder')
-    
-    if not setlist or not dbx or not active_folder: 
-        return "Error: Please select a set and add songs first."
-    
+    if not setlist or not dbx or not active_folder: return "Error: Select set/add songs."
     try:
         res = dbx.files_list_folder(active_folder)
         folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-        
         for f in folders:
             writer = PdfWriter()
             items = dbx.files_list_folder(f.path_lower).entries
             pdf_map = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
-            
             for song in setlist:
                 if song in pdf_map:
                     _, r = dbx.files_download(pdf_map[song])
                     writer.append(io.BytesIO(r.content))
-            
             out = io.BytesIO()
             writer.write(out)
             out.seek(0)
             dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
-        
         session['setlist'] = []
-        return f"<h1>Success!</h1><p>Set built in: /Generated/{set_name}</p><a href='/'>Build New Set</a>"
-    except Exception as e:
-        return f"<h1>Error</h1><p>{str(e)}</p><a href='/'>Back</a>"
+        return f"<h1>Success!</h1><p>Check: /Generated/{set_name}</p><a href='/'>Back</a>"
+    except Exception as e: return f"<h1>Error</h1><p>{str(e)}</p>"
 
 if __name__ == '__main__':
     app.run()
