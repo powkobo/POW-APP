@@ -37,7 +37,7 @@ HTML_TEMPLATE = '''
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script src="https://jsdelivr.net"></script>
+    <script src="https://unpkg.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
@@ -54,7 +54,7 @@ HTML_TEMPLATE = '''
     
     <div class="card">
         <h3>1. Select Set Folder</h3>
-        <select name="folder_path" hx-post="/update-library" hx-target="#library-container">
+        <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
             <option value="">-- Choose a Set --</option>
             {% for folder in folders %}
             <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
@@ -92,7 +92,7 @@ HTML_TEMPLATE = '''
             if (evt.detail.target.id === 'library-container') {
                 var folder = document.querySelector('select[name="folder_path"]').value;
                 document.getElementById('active_folder').value = folder;
-                document.getElementById('log-content').innerHTML += '<br>> Folder Selected: ' + folder;
+                document.getElementById('log-content').innerHTML += '<br>> Folder Loaded: ' + folder;
             }
         });
     </script>
@@ -105,17 +105,13 @@ def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
     folders, log_msg = [], "Initialising..."
-    
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
-            log_msg = f"SUCCESS: Connected with Key {APP_KEY[:4]}***. Found {len(folders)} folders."
-        except Exception as e:
-            log_msg = f"AUTH ERROR: {str(e)}"
-    else:
-        log_msg = "CONFIG ERROR: DROPBOX_REFRESH_TOKEN is missing from Render Environment Variables."
-                
+            log_msg = f"SUCCESS: Connected! Found {len(folders)} sets."
+        except Exception as e: log_msg = f"AUTH ERROR: {str(e)}"
+    else: log_msg = "CONFIG ERROR: Refresh Token missing."
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), debug_log_content=log_msg)
 
 @app.route('/update-library', methods=['POST'])
@@ -127,15 +123,16 @@ def update_library():
         try:
             res = dbx.files_list_folder(path)
             subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-            if subs:
-                songs_res = dbx.files_list_folder(subs[0].path_lower)
+            for sub in subs:
+                # Look for PDFs in each instrument folder until we find some
+                songs_res = dbx.files_list_folder(sub.path_lower)
                 pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
-                for name in pdf_names:
-                    html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
-            else:
-                html = "<p>No instrument folders found in this set.</p>"
-        except Exception as e:
-            html = f"<p style='color:red;'>Dropbox Error: {str(e)}</p>"
+                if pdf_names:
+                    for name in pdf_names:
+                        html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
+                    break 
+            if not html: html = "<p>No PDFs found in any instrument folders.</p>"
+        except Exception as e: html = f"<p style='color:red;'>Dropbox Error: {str(e)}</p>"
     return html
 
 @app.route('/add', methods=['POST'])
