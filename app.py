@@ -3,23 +3,24 @@ from flask import Flask, render_template_string, request, session
 from pypdf import PdfWriter
 
 app = Flask(__name__)
-# Secure secret key for session handling
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-band-2026-secure")
 
-# Your App Credentials
-APP_KEY = "88f9pjkp9e5b7qg"
+# YOUR CORRECTED KEYS
+APP_KEY = "y6584ao8zvw1uzc"
 APP_SECRET = "54ely7xrn7l4ixj"
 
 def get_dbx():
-    """Initialises Dropbox with automatic token refreshing."""
     refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN")
+    if not refresh_token:
+        return None
     try:
         return dropbox.Dropbox(
             oauth2_refresh_token=refresh_token,
             app_key=APP_KEY,
             app_secret=APP_SECRET
         )
-    except: return None
+    except Exception as e:
+        return None
 
 def render_setlist_html(setlist):
     html = ""
@@ -45,11 +46,11 @@ HTML_TEMPLATE = '''
         .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; min-height: 80px; overflow-y: auto; margin-top: 20px; word-break: break-all; }
+        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; min-height: 80px; margin-top: 20px; word-break: break-all; }
     </style>
 </head>
 <body>
-    <h1>🎺 POW Set Builder</h1>
+    <h1>🎺 POW Set Downloader</h1>
     
     <div class="card">
         <h3>1. Select Set Folder</h3>
@@ -91,11 +92,8 @@ HTML_TEMPLATE = '''
             if (evt.detail.target.id === 'library-container') {
                 var folder = document.querySelector('select[name="folder_path"]').value;
                 document.getElementById('active_folder').value = folder;
-                document.getElementById('log-content').innerHTML += '<br>> Library Updated: ' + folder;
+                document.getElementById('log-content').innerHTML += '<br>> Folder Selected: ' + folder;
             }
-        });
-        document.body.addEventListener('htmx:responseError', function(evt) {
-            document.getElementById('log-content').innerHTML += '<br><span style="color:red;">> ERROR: ' + evt.detail.xhr.status + '</span>';
         });
     </script>
 </body>
@@ -106,20 +104,17 @@ HTML_TEMPLATE = '''
 def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
-    folders = []
-    log_msg = "App Initialised."
+    folders, log_msg = [], "Initialising..."
     
     if dbx:
         try:
-            # Absolute root for Full Dropbox
             res = dbx.files_list_folder("")
-            all_names = [e.name for e in res.entries]
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
-            log_msg = f"Root Scan: Found {len(all_names)} items. Folders: {', '.join([f.name for f in folders]) if folders else 'None'}"
+            log_msg = f"SUCCESS: Connected with Key {APP_KEY[:4]}***. Found {len(folders)} folders."
         except Exception as e:
-            log_msg = f"Dropbox Error: {str(e)}"
+            log_msg = f"AUTH ERROR: {str(e)}"
     else:
-        log_msg = "Error: DROPBOX_REFRESH_TOKEN missing."
+        log_msg = "CONFIG ERROR: DROPBOX_REFRESH_TOKEN is missing from Render Environment Variables."
                 
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), debug_log_content=log_msg)
 
@@ -130,11 +125,9 @@ def update_library():
     html = ""
     if dbx and path:
         try:
-            # 1. Get instrument subfolders
             res = dbx.files_list_folder(path)
             subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
             if subs:
-                # 2. Pick first instrument (e.g. Soprano) to build library
                 songs_res = dbx.files_list_folder(subs[0].path_lower)
                 pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
                 for name in pdf_names:
