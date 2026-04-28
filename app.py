@@ -5,7 +5,7 @@ from pypdf import PdfWriter
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-band-2026-secure")
 
-# Your App Credentials
+# App Credentials
 APP_KEY = "88f9pjkp9e5b7qg"
 APP_SECRET = "54ely7xrn7l4ixj"
 
@@ -19,37 +19,36 @@ def get_dbx():
         )
     except: return None
 
-# We define the setlist display as a reusable piece of code
 def render_setlist_html(setlist):
     html = ""
     for i, song in enumerate(setlist):
         html += f'''
-        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee;">
+        <div class="item">
             <span>{i+1}. {song}</span>
-            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px;" 
-                    hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
+            <button class="btn-rem" hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
         </div>'''
-    if not setlist:
-        html = '<p style="color:#999;">No songs selected.</p>'
-    return html
+    return html if setlist else '<p style="color:#999;">No songs selected.</p>'
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <script src="https://unpkg.com"></script>
+    <!-- REVISED HTMX LINK -->
+    <script src="https://jsdelivr.net"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
         .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+        .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; height: 100px; overflow-y: auto; margin-top: 20px; }
     </style>
 </head>
 <body>
-    <h1>🎺 POW Set Downloader</h1>
+    <h1>🎺 POW Set Builder</h1>
     
     <div class="card">
         <h3>1. Select Set Folder</h3>
@@ -63,7 +62,7 @@ HTML_TEMPLATE = '''
 
     <div class="card">
         <h3>2. Library (Click +)</h3>
-        <div id="library-container" style="max-height: 300px; overflow-y: auto;">
+        <div id="library-container" style="max-height: 250px; overflow-y: auto;">
             <p style="color:#999;">Select a Set above.</p>
         </div>
     </div>
@@ -71,23 +70,32 @@ HTML_TEMPLATE = '''
     <div class="card">
         <h3>3. Your Setlist</h3>
         <div id="setlist-inner">{{ setlist_html|safe }}</div>
-        <button style="width:100%; margin-top:10px; padding:8px; background:#6c757d; color:white; border:none; border-radius:4px;" 
-                hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
     </div>
 
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder" value="">
         <input type="text" name="set_name" placeholder="Output Folder Name" required>
-        <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
+        <button class="build-btn" type="submit">BUILD ALL PARTS</button>
     </form>
 
+    <div id="debug-log">
+        <strong>Debug Console:</strong><br>
+        <div id="log-content">App Initialised... Waiting for user.</div>
+    </div>
+
     <script>
+        // Log every HTMX request and error to the green screen
+        document.body.addEventListener('htmx:beforeRequest', function(evt) {
+            document.getElementById('log-content').innerHTML += '<br>> Sending request to ' + evt.detail.path;
+        });
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.target.id === 'library-container') {
-                // Ensure the build form knows which Dropbox folder we are using
-                var folder = document.querySelector('select[name="folder_path"]').value;
-                document.getElementById('active_folder').value = folder;
+                document.getElementById('active_folder').value = document.querySelector('select[name="folder_path"]').value;
+                document.getElementById('log-content').innerHTML += '<br>> Library updated successfully.';
             }
+        });
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            document.getElementById('log-content').innerHTML += '<br><span style="color:red;">> ERROR: ' + evt.detail.xhr.status + '</span>';
         });
     </script>
 </body>
@@ -113,18 +121,16 @@ def update_library():
     html = ""
     if dbx and path:
         try:
-            # Find the first instrument subfolder
             res = dbx.files_list_folder(path)
-            sub = next(e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata))
-            songs = dbx.files_list_folder(sub.path_lower).entries
-            pdf_names = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
-            for name in pdf_names:
-                html += f'''
-                <div class="item">
-                    <span>{name}</span>
-                    <button class="btn-add" hx-post="/add" hx-vals='{{"song": "{name}"}}' hx-target="#setlist-inner">+</button>
-                </div>'''
-        except: html = "<p>No PDFs found.</p>"
+            # Find any subfolder that isn't a file
+            subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+            if subs:
+                songs = dbx.files_list_folder(subs[0].path_lower).entries
+                pdf_names = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
+                for name in pdf_names:
+                    html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals='{{"song": "{name}"}}' hx-target="#setlist-inner">+</button></div>'''
+            else: html = "<p>No instrument folders found.</p>"
+        except Exception as e: html = f"<p style='color:red;'>Dropbox Error: {e}</p>"
     return html
 
 @app.route('/add', methods=['POST'])
@@ -144,11 +150,6 @@ def remove_song():
         lst.remove(song)
         session['setlist'] = lst
     return render_setlist_html(session['setlist'])
-
-@app.route('/clear', methods=['POST'])
-def clear():
-    session['setlist'] = []
-    return render_setlist_html([])
 
 @app.route('/build', methods=['POST'])
 def build():
