@@ -29,15 +29,15 @@ HTML_TEMPLATE = '''
         .btn-add { background: #28a745; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
-        .error { color: #b00; background: #fee; padding: 10px; border-radius: 4px; margin-bottom: 10px; }
+        .error { color: #b00; background: #fee; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
     </style>
 </head>
 <body>
     <h1>🎺 POW Set Builder</h1>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if error %}<div class="error"><strong>Notice:</strong> {{ error }}</div>{% endif %}
 
     <div class="card">
-        <h3>1. Library (Click + to add)</h3>
+        <h3>1. Library (Click +)</h3>
         <div style="max-height: 250px; overflow-y: auto;">
             {% for song in library %}
             <div class="item">
@@ -45,6 +45,7 @@ HTML_TEMPLATE = '''
                 <button class="btn-add" hx-post="/add" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">+</button>
             </div>
             {% endfor %}
+            {% if not library and not error %}<p>No PDFs found.</p>{% endif %}
         </div>
     </div>
 
@@ -54,7 +55,7 @@ HTML_TEMPLATE = '''
     </div>
 
     <form action="/build" method="POST">
-        <input type="text" name="set_name" placeholder="Set Name (e.g. Christmas Concert)" required style="width:100%; padding:12px; margin-bottom:15px; box-sizing:border-box;">
+        <input type="text" name="set_name" placeholder="Set Name (e.g. Christmas)" required style="width:100%; padding:12px; margin-bottom:15px; box-sizing:border-box;">
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
 </body>
@@ -71,6 +72,14 @@ INNER_TEMPLATE = '''
 {% if not setlist %}<p style="color:#999;">No songs selected.</p>{% endif %}
 '''
 
+def find_folders(dbx, path):
+    """Safely finds folders only, avoiding files that cause 'unsupported_content_type'."""
+    try:
+        res = dbx.files_list_folder(path)
+        return [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+    except:
+        return []
+
 @app.route('/')
 def index():
     dbx = get_dbx()
@@ -78,25 +87,31 @@ def index():
     library, error = [], None
 
     if not dbx:
-        error = "Dropbox keys missing in Render Settings."
+        error = "Dropbox credentials missing in Render."
     else:
-        try:
-            # 1. Main path (Must start with / and no trailing slash)
-            base_path = "/pow pdfs/pow pdfs parts by instrument"
-            
-            # 2. List items and filter for ONLY folders
-            all_entries = dbx.files_list_folder(base_path).entries
-            folders = [e for e in all_entries if isinstance(e, dropbox.files.FolderMetadata)]
-            
+        # We check three possible paths to see where your files are hidden
+        potential_paths = [
+            "/POW PDFs/POW PDFs Parts by instrument",
+            "/POW PDFs Parts by instrument",
+            "" # The root of the app folder
+        ]
+        
+        folders = []
+        for p in potential_paths:
+            folders = find_folders(dbx, p)
             if folders:
-                # Pick the first actual folder to get the song list (Agnostic approach)
-                first_folder = folders[0]
-                songs = dbx.files_list_folder(first_folder.path_lower).entries
-                library = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
-            else:
-                error = "No instrument folders found in the specified path."
-        except Exception as e:
-            error = f"Path error: {str(e)}"
+                session['last_path'] = p # Save the one that worked
+                break
+        
+        if folders:
+            try:
+                # Use the first instrument folder to build the song list
+                songs_res = dbx.files_list_folder(folders[0].path_lower)
+                library = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
+            except Exception as e:
+                error = f"Found folders but couldn't read songs: {e}"
+        else:
+            error = "Could not find your instrument folders. Ensure they are uploaded to Dropbox."
 
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
                                  library=library, setlist=session['setlist'], error=error)
@@ -119,17 +134,16 @@ def remove_song():
 def build():
     dbx = get_dbx()
     setlist, set_name = session.get('setlist', []), request.form.get('set_name')
+    path = session.get('last_path', "")
+    
     if not setlist or not dbx: return "Error: Data missing."
     
     try:
-        base_path = "/pow pdfs/pow pdfs parts by instrument"
-        all_entries = dbx.files_list_folder(base_path).entries
-        folders = [e for e in all_entries if isinstance(e, dropbox.files.FolderMetadata)]
-        
+        folders = find_folders(dbx, path)
         for f in folders:
             writer = PdfWriter()
-            # Map PDFs in this specific instrument folder
-            inst_files = {e.name: e.path_lower for e in dbx.files_list_folder(f.path_lower).entries if e.name.lower().endswith('.pdf')}
+            items = dbx.files_list_folder(f.path_lower).entries
+            inst_files = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
             
             for song in setlist:
                 if song in inst_files:
@@ -142,7 +156,7 @@ def build():
             dbx.files_upload(out.read(), f"/Generated Sets/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
         
         session['setlist'] = []
-        return f"<h1>Success!</h1><p>Created in Dropbox: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
+        return f"<h1>Success!</h1><p>Created: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
     except Exception as e:
         return f"<h1>Build Error</h1><p>{str(e)}</p><a href='/'>Try Again</a>"
 
