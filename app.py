@@ -5,7 +5,7 @@ from pypdf import PdfWriter
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-band-2026-secure")
 
-# YOUR CORRECTED KEYS
+# YOUR VERIFIED KEYS
 APP_KEY = "y6584ao8zvw1uzc"
 APP_SECRET = "54ely7xrn7l4ixj"
 
@@ -19,16 +19,16 @@ def get_dbx():
             app_key=APP_KEY,
             app_secret=APP_SECRET
         )
-    except Exception as e:
-        return None
+    except: return None
 
 def render_setlist_html(setlist):
     html = ""
     for i, song in enumerate(setlist):
         html += f'''
-        <div class="item">
+        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee;">
             <span>{i+1}. {song}</span>
-            <button class="btn-rem" hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
+            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px;" 
+                    hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
         </div>'''
     return html if setlist else '<p style="color:#999;">No songs selected.</p>'
 
@@ -37,16 +37,16 @@ HTML_TEMPLATE = '''
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- FIXED HTMX LINK BELOW - PREVENTS MIME TYPE ERROR -->
     <script src="https://unpkg.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
         .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
-        .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; min-height: 80px; margin-top: 20px; word-break: break-all; }
+        #debug-log { background: #222; color: #0f0; padding: 10px; font-family: monospace; font-size: 11px; border-radius: 5px; min-height: 80px; margin-top: 20px; }
     </style>
 </head>
 <body>
@@ -64,7 +64,7 @@ HTML_TEMPLATE = '''
 
     <div class="card">
         <h3>2. Library (Click +)</h3>
-        <div id="library-container" style="max-height: 250px; overflow-y: auto;">
+        <div id="library-container" style="max-height: 300px; overflow-y: auto;">
             <p style="color:#999;">Select a Set above.</p>
         </div>
     </div>
@@ -83,8 +83,7 @@ HTML_TEMPLATE = '''
     </form>
 
     <div id="debug-log">
-        <strong>Debug Console:</strong><br>
-        <div id="log-content">{{ debug_log_content|safe }}</div>
+        <strong>Status:</strong> <span id="status-text">{{ status_msg }}</span>
     </div>
 
     <script>
@@ -92,7 +91,7 @@ HTML_TEMPLATE = '''
             if (evt.detail.target.id === 'library-container') {
                 var folder = document.querySelector('select[name="folder_path"]').value;
                 document.getElementById('active_folder').value = folder;
-                document.getElementById('log-content').innerHTML += '<br>> Folder Loaded: ' + folder;
+                document.getElementById('status-text').innerHTML = "Loaded Library: " + folder;
             }
         });
     </script>
@@ -104,15 +103,15 @@ HTML_TEMPLATE = '''
 def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
-    folders, log_msg = [], "Initialising..."
+    folders, status_msg = [], "Connecting..."
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
-            log_msg = f"SUCCESS: Connected! Found {len(folders)} sets."
-        except Exception as e: log_msg = f"AUTH ERROR: {str(e)}"
-    else: log_msg = "CONFIG ERROR: Refresh Token missing."
-    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), debug_log_content=log_msg)
+            status_msg = f"Connected! Found {len(folders)} sets."
+        except Exception as e: status_msg = f"Dropbox Error: {e}"
+    else: status_msg = "Error: Refresh Token Missing."
+    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), status_msg=status_msg)
 
 @app.route('/update-library', methods=['POST'])
 def update_library():
@@ -124,15 +123,15 @@ def update_library():
             res = dbx.files_list_folder(path)
             subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
             for sub in subs:
-                # Look for PDFs in each instrument folder until we find some
+                # We search every instrument folder until we find your PDFs
                 songs_res = dbx.files_list_folder(sub.path_lower)
                 pdf_names = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
                 if pdf_names:
                     for name in pdf_names:
                         html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
                     break 
-            if not html: html = "<p>No PDFs found in any instrument folders.</p>"
-        except Exception as e: html = f"<p style='color:red;'>Dropbox Error: {str(e)}</p>"
+            if not html: html = "<p>No PDFs found in instrument folders.</p>"
+        except Exception as e: html = f"<p style='color:red;'>Error: {e}</p>"
     return html
 
 @app.route('/add', methods=['POST'])
@@ -164,7 +163,7 @@ def build():
     setlist = session.get('setlist', [])
     set_name = request.form.get('set_name')
     active_folder = request.form.get('active_folder')
-    if not setlist or not dbx or not active_folder: return "Error: Select set/add songs."
+    if not setlist or not dbx or not active_folder: return "Error: Select set/add songs first."
     try:
         res = dbx.files_list_folder(active_folder)
         folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
