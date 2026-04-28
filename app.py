@@ -26,6 +26,7 @@ HTML_TEMPLATE = '''
         .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn-add { background: #28a745; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
+        .btn-clear { background: #6c757d; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
     </style>
@@ -34,35 +35,36 @@ HTML_TEMPLATE = '''
     <h1>🎺 POW Set Builder</h1>
     
     <div class="card">
-        <h3>1. Select Active Set Folder</h3>
+        <h3>1. Select Concert/Set Folder</h3>
         <select name="folder_path" hx-post="/update-library" hx-target="#library-container">
-            <option value="">-- Choose a Set --</option>
+            <option value="">-- Autodetecting Folders... --</option>
             {% for folder in folders %}
             <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
             {% endfor %}
         </select>
+        <p style="font-size: 0.8em; color: #666;">New folders in Dropbox appear here automatically.</p>
     </div>
 
     <div class="card">
         <h3>2. Library (Click +)</h3>
         <div id="library-container" style="max-height: 250px; overflow-y: auto;">
-            <p style="color:#999;">Select a Set above to load music.</p>
+            <p style="color:#999;">Select a folder above to see songs.</p>
         </div>
     </div>
 
     <div class="card">
         <h3>3. Your Setlist</h3>
         <div id="setlist-inner">{% include 'inner' %}</div>
+        <button class="btn-clear" hx-post="/clear" hx-target="#setlist-inner">Clear All Songs</button>
     </div>
 
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder" value="">
-        <input type="text" name="set_name" placeholder="Name the Output (e.g. Summer Gig)" required>
+        <input type="text" name="set_name" placeholder="Name the Output (e.g. Christmas 2026)" required>
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
 
     <script>
-        // Updates the hidden input so the builder knows which Set folder to use
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.target.id === 'library-container') {
                 document.getElementById('active_folder').value = document.querySelector('select[name="folder_path"]').value;
@@ -80,7 +82,7 @@ LIBRARY_PARTIAL = '''
     <button class="btn-add" hx-post="/add" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">+</button>
 </div>
 {% endfor %}
-{% if not library %}<p style="color:#999;">No PDFs found in this Set.</p>{% endif %}
+{% if not library %}<p style="color:#999;">No PDFs found in this folder.</p>{% endif %}
 '''
 
 INNER_TEMPLATE = '''
@@ -100,9 +102,10 @@ def index():
     folders = []
     if dbx:
         try:
-            # Lists the top-level folders (Set 1, Set 2, Set 3)
-            res = dbx.files_list_folder('')
-            folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)], key=lambda x: x.name)
+            # AUTO-DETECT: List all folders in the root
+            res = dbx.files_list_folder("")
+            # Ignore the "Generated" folder so it doesn't clutter the list
+            folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
         except: pass
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
                                  folders=folders, setlist=session['setlist'])
@@ -114,11 +117,11 @@ def update_library():
     library = []
     if dbx and folder_path:
         try:
-            # Look inside the first instrument folder it finds to get the song list
             res = dbx.files_list_folder(folder_path)
             subfolders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
             if subfolders:
-                master = subfolders[0].path_lower # Uses first instrument (e.g. Soprano)
+                # Use the first instrument folder it finds to populate the library list
+                master = subfolders[0].path_lower 
                 songs = dbx.files_list_folder(master).entries
                 library = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
         except: pass
@@ -138,39 +141,36 @@ def remove_song():
         lst.remove(song); session['setlist'] = lst; session.modified = True
     return render_template_string(INNER_TEMPLATE, setlist=lst)
 
+@app.route('/clear', methods=['POST'])
+def clear_list():
+    session['setlist'] = []
+    session.modified = True
+    return render_template_string(INNER_TEMPLATE, setlist=[])
+
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
     setlist, set_name = session.get('setlist', []), request.form.get('set_name')
     active_folder = request.form.get('active_folder')
-    
-    if not setlist or not dbx or not active_folder: return "Error: Select a Set and add songs first."
-    
+    if not setlist or not dbx or not active_folder: return "Error: Select folder/songs first."
     try:
-        # Get all 19 instrument folders in the SELECTED Set
         res = dbx.files_list_folder(active_folder)
         folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-        
         for f in folders:
             writer = PdfWriter()
             items = dbx.files_list_folder(f.path_lower).entries
-            inst_files = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
-            
+            pdf_map = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
             for song in setlist:
-                if song in inst_files:
-                    _, res_file = dbx.files_download(inst_files[song])
-                    writer.append(io.BytesIO(res_file.content))
-            
+                if song in pdf_map:
+                    _, r = dbx.files_download(pdf_map[song])
+                    writer.append(io.BytesIO(r.content))
             out = io.BytesIO()
             writer.write(out)
             out.seek(0)
-            # Upload to a "Generated" folder at the root
             dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
-        
         session['setlist'] = []
-        return f"<h1>Success!</h1><p>Done! Check Dropbox folder: /Generated/{set_name}</p><a href='/'>Build Another</a>"
-    except Exception as e:
-        return f"<h1>Error</h1><p>{str(e)}</p><a href='/'>Back</a>"
+        return f"<h1>Success!</h1><p>Check: /Generated/{set_name}</p><a href='/'>Back to Start</a>"
+    except Exception as e: return f"<h1>Error</h1><p>{str(e)}</p>"
 
 if __name__ == '__main__':
     app.run()
