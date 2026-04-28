@@ -1,90 +1,142 @@
-import os, io, dropbox
-from flask import Flask, render_template_string, request, send_file
+import os, io, dropbox, re
+from flask import Flask, render_template_string, request, session
 from pypdf import PdfWriter
+from rapidfuzz import fuzz, process
 
 app = Flask(__name__)
+app.secret_key = "pow_band_secret" # Needed for the +/- session memory
 
-# Connect to Dropbox via Environment Variable
-TOKEN = os.environ.get("DROPBOX_TOKEN")
-dbx = dropbox.Dropbox(TOKEN)
+# Dropbox Connection (Uses your Refresh Token logic)
+dbx = dropbox.Dropbox(
+    oauth2_refresh_token=os.environ.get("DROPBOX_REFRESH_TOKEN"),
+    app_key=os.environ.get("DROPBOX_APP_KEY"),
+    app_secret=os.environ.get("DROPBOX_APP_SECRET")
+)
+
+def normalize(text):
+    return re.sub(r"\s+", " ", re.sub(r"[_\-\(\)\[\]\{\},]+", " ", text.lower())).strip()
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://unpkg.com"></script>
     <style>
-        body { font-family: sans-serif; padding: 20px; max-width: 400px; margin: auto; text-align: center; }
-        select, button { width: 100%; padding: 15px; margin: 10px 0; font-size: 18px; border-radius: 8px; border: 1px solid #ccc; }
-        button { background: #008000; color: white; font-weight: bold; border: none; }
-        .loader { font-size: 12px; color: #666; }
+        body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; background: #fdfdfd; }
+        .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
+        .song-item { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eee; }
+        .btn-add { color: green; font-weight: bold; cursor: pointer; }
+        .btn-rem { color: red; font-weight: bold; cursor: pointer; }
+        button.main { width: 100%; padding: 15px; background: #b30000; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
     </style>
 </head>
 <body>
-    <h1>🎺 POW Parts</h1>
-    <form method="POST">
-        <label>1. Select Set</label>
-        <select name="set_num">
-            <option>Set 1</option>
-            <option>Set 2</option>
-            <option>Set 3</option>
-        </select>
+    <h1>🎺 POW Set Builder</h1>
 
-        <label>2. Select Instrument</label>
-        <select name="instrument">
-            {% for inst in instruments %}
-            <option value="{{ inst }}">{{ inst }}</option>
-            {% endfor %}
-        </select>
+    <div class="card">
+        <h3>1. Search Library</h3>
+        <input type="text" name="q" placeholder="Search song name..." 
+               hx-post="/search" hx-trigger="keyup changed delay:500ms" hx-target="#search-results" style="width:100%; padding:10px;">
+        <div id="search-results" style="margin-top:10px;"></div>
+    </div>
 
-        <button type="submit" onclick="this.innerHTML='Generating...';">Download My PDF</button>
+    <div class="card">
+        <h3>2. Current Setlist</h3>
+        <div id="current-setlist">
+            <!-- This part updates dynamically -->
+            {% include 'setlist_partial.html' %}
+        </div>
+    </div>
+
+    <form action="/build" method="POST">
+        <input type="text" name="set_name" placeholder="Set Name (e.g. Christmas 2024)" required style="width:100%; padding:10px; margin-bottom:10px;">
+        <button class="main" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
-    <p class="loader">Files are merged live from Dropbox</p>
 </body>
 </html>
 '''
 
-def get_instruments(set_name="Set 1"):
-    """Lists folders in Dropbox to build the dropdown menu."""
-    try:
-        path = f"/POW PDFs/POW PDFs Parts by instrument/{set_name}"
-        res = dbx.files_list_folder(path)
-        # Only return folder names, sorted alphabetically
-        return sorted([entry.name for entry in res.entries if isinstance(entry, dropbox.files.FolderMetadata)])
-    except:
-        return ["Error: Check Dropbox Path"]
+# Helper to render the setlist part
+SETLIST_PARTIAL = '''
+{% for song in setlist %}
+<div class="song-item">
+    <span>{{ song }}</span>
+    <span class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#current-setlist">−</span>
+</div>
+{% endfor %}
+{% if not setlist %}<p style="color:#999;">Setlist is empty</p>{% endif %}
+'''
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/')
 def index():
-    # Get instruments for the dropdown (defaults to Set 1 for the list)
-    instruments = get_instruments()
+    if 'setlist' not in session: session['setlist'] = []
+    return render_template_string(HTML_TEMPLATE, setlist=session['setlist'])
 
-    if request.method == 'POST':
-        set_num = request.form.get('set_num')
-        inst = request.form.get('instrument')
-        
+@app.route('/search', methods=['POST'])
+def search():
+    query = normalize(request.form.get('q', ''))
+    if not query: return ""
+    
+    # Scans one instrument folder just to get song titles (Agnostic approach)
+    base_path = "/POW PDFs/POW PDFs Parts by instrument/01-Soprano Cornet"
+    files = [f.name for f in dbx.files_list_folder(base_path).entries if f.name.lower().endswith('.pdf')]
+    
+    matches = process.extract(query, files, limit=5, scorer=fuzz.token_set_ratio)
+    
+    results_html = ""
+    for name, score, idx in matches:
+        if score > 50:
+            results_html += f'''
+            <div class="song-item">
+                <span>{name}</span>
+                <span class="btn-add" hx-post="/add" hx-vals='{{"song": "{name}"}}' hx-target="#current-setlist">+</span>
+            </div>'''
+    return results_html
+
+@app.route('/add', methods=['POST'])
+def add_song():
+    song = request.form.get('song')
+    lst = session.get('setlist', [])
+    if song not in lst: lst.append(song)
+    session['setlist'] = lst
+    return render_template_string(SETLIST_PARTIAL, setlist=lst)
+
+@app.route('/remove', methods=['POST'])
+def remove_song():
+    song = request.form.get('song')
+    lst = session.get('setlist', [])
+    if song in lst: lst.remove(song)
+    session['setlist'] = lst
+    return render_template_string(SETLIST_PARTIAL, setlist=lst)
+
+@app.route('/build', methods=['POST'])
+def build():
+    setlist = session.get('setlist', [])
+    set_name = request.form.get('set_name')
+    base_lib = "/POW PDFs/POW PDFs Parts by instrument"
+    
+    # 1. Get all 19 instrument folders
+    folders = [f for f in dbx.files_list_folder(base_lib).entries if isinstance(f, dropbox.files.FolderMetadata)]
+    
+    for folder in folders:
         writer = PdfWriter()
-        folder_path = f"/POW PDFs/POW PDFs Parts by instrument/{set_num}/{inst}"
+        # Find the songs in THIS instrument folder
+        inst_files = {f.name: f.path_lower for f in dbx.files_list_folder(folder.path_lower).entries}
         
-        # Download and merge each PDF in the folder
-        files = dbx.files_list_folder(folder_path).entries
-        for file in sorted(files, key=lambda x: x.name):
-            if file.name.lower().endswith('.pdf'):
-                _, res = dbx.files_download(file.path_lower)
+        for song_name in setlist:
+            if song_name in inst_files:
+                _, res = dbx.files_download(inst_files[song_name])
                 writer.append(io.BytesIO(res.content))
         
+        # Save to Generated Sets
         output = io.BytesIO()
         writer.write(output)
         output.seek(0)
-        
-        return send_file(
-            output, 
-            download_name=f"{inst}_{set_num}.pdf", 
-            as_attachment=True,
-            mimetype='application/pdf'
-        )
+        dbx.files_upload(output.read(), f"/Generated Sets/{set_name}/{folder.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
 
-    return render_template_string(HTML_TEMPLATE, instruments=instruments)
+    session['setlist'] = [] # Clear for next time
+    return f"<h1>Success!</h1><p>Created 19 parts in /Generated Sets/{set_name}</p><a href='/'>Back to Builder</a>"
 
 if __name__ == '__main__':
     app.run()
