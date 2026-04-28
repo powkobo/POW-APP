@@ -37,8 +37,8 @@ HTML_TEMPLATE = '''
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- FIXED SCRIPT LINK BELOW - THIS STOPS THE CONSOLE ERROR -->
-    <script src="https://unpkg.com"></script>
+    <!-- NEW TRUSTED SCRIPT LINK BELOW -->
+    <script src="https://cloudflare.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
