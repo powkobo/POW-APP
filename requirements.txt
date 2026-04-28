@@ -1,4 +1,5 @@
 flask
 dropbox
 pypdf
+rapidfuzz
 gunicorn
