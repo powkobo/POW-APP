@@ -4,10 +4,9 @@ from pypdf import PdfWriter
 from rapidfuzz import fuzz, process
 
 app = Flask(__name__)
-# CRITICAL: This is required for the +/- list to work in the browser
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "fallback_local_secret")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-set-builder-2026")
 
-# Safe Dropbox Connection
+# Connect to Dropbox
 try:
     dbx = dropbox.Dropbox(
         oauth2_refresh_token=os.environ.get("DROPBOX_REFRESH_TOKEN"),
@@ -15,13 +14,12 @@ try:
         app_secret=os.environ.get("DROPBOX_APP_SECRET")
     )
 except Exception as e:
-    print(f"ERROR: Dropbox not configured correctly: {e}")
     dbx = None
 
 def normalize(text):
     return re.sub(r"\s+", " ", re.sub(r"[_\-\(\)\[\]\{\},]+", " ", text.lower())).strip()
 
-# Interactive HTML with +/- logic
+# Complete, single-file HTML template
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -48,7 +46,15 @@ HTML_TEMPLATE = '''
 
     <div class="card">
         <h3>Current Setlist</h3>
-        <div id="current-setlist">{% include 'setlist_partial.html' %}</div>
+        <div id="current-setlist">
+            {% for song in setlist %}
+            <div class="song-item">
+                <span>{{ song }}</span>
+                <span class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#current-setlist">−</span>
+            </div>
+            {% endfor %}
+            {% if not setlist %}<p style="color:#999;">List is empty</p>{% endif %}
+        </div>
     </div>
 
     <form action="/build" method="POST">
@@ -57,17 +63,6 @@ HTML_TEMPLATE = '''
     </form>
 </body>
 </html>
-'''
-
-# The dynamic list that updates when you hit +/-
-SETLIST_PARTIAL = '''
-{% for song in setlist %}
-<div class="song-item">
-    <span>{{ song }}</span>
-    <span class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#current-setlist">−</span>
-</div>
-{% endfor %}
-{% if not setlist %}<p style="color:#999;">List is empty</p>{% endif %}
 '''
 
 @app.route('/')
@@ -79,7 +74,8 @@ def index():
 def search():
     query = normalize(request.form.get('q', ''))
     if not query or not dbx: return ""
-    # Scans one folder to build your library list
+    
+    # Update this path to a folder that DEFINITELY exists in your Dropbox
     base = "/POW PDFs/POW PDFs Parts by instrument/01-Soprano Cornet"
     try:
         files = [f.name for f in dbx.files_list_folder(base).entries if f.name.lower().endswith('.pdf')]
@@ -89,42 +85,57 @@ def search():
             if score > 50:
                 res += f'<div class="song-item"><span>{name}</span><span class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#current-setlist">+</span></div>'
         return res
-    except: return "Folder not found in Dropbox."
+    except Exception as e:
+        return f"<div>Error: {str(e)}</div>"
 
 @app.route('/add', methods=['POST'])
 def add_song():
     song, lst = request.form.get('song'), session.get('setlist', [])
-    if song and song not in lst: lst.append(song); session['setlist'] = lst
-    return render_template_string(SETLIST_PARTIAL, setlist=lst)
+    if song and song not in lst: 
+        lst.append(song)
+        session['setlist'] = lst
+    # Manually re-rendering the list part since we removed the partial file
+    res = ""
+    for s in lst:
+        res += f'<div class="song-item"><span>{s}</span><span class="btn-rem" hx-post="/remove" hx-vals=\'{{"song": "{s}"}}\' hx-target="#current-setlist">−</span></div>'
+    return res
 
 @app.route('/remove', methods=['POST'])
 def remove_song():
     song, lst = request.form.get('song'), session.get('setlist', [])
-    if song in lst: lst.remove(song); session['setlist'] = lst
-    return render_template_string(SETLIST_PARTIAL, setlist=lst)
+    if song in lst: 
+        lst.remove(song)
+        session['setlist'] = lst
+    res = ""
+    for s in lst:
+        res += f'<div class="song-item"><span>{s}</span><span class="btn-rem" hx-post="/remove" hx-vals=\'{{"song": "{s}"}}\' hx-target="#current-setlist">−</span></div>'
+    return res or '<p style="color:#999;">List is empty</p>'
 
 @app.route('/build', methods=['POST'])
 def build():
     setlist, set_name = session.get('setlist', []), request.form.get('set_name')
-    if not setlist or not dbx: return "Missing setlist or Dropbox connection."
+    if not setlist or not dbx: return "Error: Missing setlist or Dropbox connection."
     
-    base_lib = "/POW PDFs/POW PDFs Parts by instrument"
-    folders = [f for f in dbx.files_list_folder(base_lib).entries if isinstance(f, dropbox.files.FolderMetadata)]
-    
-    for folder in folders:
-        writer = PdfWriter()
-        inst_files = {f.name: f.path_lower for f in dbx.files_list_folder(folder.path_lower).entries}
-        for song in setlist:
-            if song in inst_files:
-                _, res = dbx.files_download(inst_files[song])
-                writer.append(io.BytesIO(res.content))
-        out = io.BytesIO()
-        writer.write(out)
-        out.seek(0)
-        dbx.files_upload(out.read(), f"/Generated Sets/{set_name}/{folder.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
-    
-    session['setlist'] = []
-    return f"<h1>Success!</h1><p>Parts built in Dropbox: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
+    try:
+        base_lib = "/POW PDFs/POW PDFs Parts by instrument"
+        folders = [f for f in dbx.files_list_folder(base_lib).entries if isinstance(f, dropbox.files.FolderMetadata)]
+        
+        for folder in folders:
+            writer = PdfWriter()
+            inst_files = {f.name: f.path_lower for f in dbx.files_list_folder(folder.path_lower).entries}
+            for song in setlist:
+                if song in inst_files:
+                    _, res = dbx.files_download(inst_files[song])
+                    writer.append(io.BytesIO(res.content))
+            out = io.BytesIO()
+            writer.write(out)
+            out.seek(0)
+            dbx.files_upload(out.read(), f"/Generated Sets/{set_name}/{folder.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
+        
+        session['setlist'] = []
+        return f"<h1>Success!</h1><p>Parts built in Dropbox: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
+    except Exception as e:
+        return f"<h1>Build Error</h1><p>{str(e)}</p><a href='/'>Back</a>"
 
 if __name__ == '__main__':
     app.run()
