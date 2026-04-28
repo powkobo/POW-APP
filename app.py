@@ -14,6 +14,7 @@ def get_dbx():
         )
     except: return None
 
+# --- UI TEMPLATES ---
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -26,17 +27,14 @@ HTML_TEMPLATE = '''
         .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn-add { background: #28a745; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
-        .btn-clear { background: #6c757d; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        .troubleshooter { font-size: 11px; color: #777; background: #eee; padding: 10px; border-radius: 5px; margin-top: 30px; }
     </style>
 </head>
 <body>
     <h1>🎺 POW Set Builder</h1>
-    
     <div class="card">
-        <h3>1. Select Set Folder</h3>
+        <h3>1. Select Set</h3>
         <select name="folder_path" hx-post="/update-library" hx-target="#library-container">
             <option value="">-- Choose a Set --</option>
             {% for folder in folders %}
@@ -44,31 +42,21 @@ HTML_TEMPLATE = '''
             {% endfor %}
         </select>
     </div>
-
     <div class="card">
         <h3>2. Library (Click +)</h3>
         <div id="library-container" style="max-height: 250px; overflow-y: auto;">
             <p style="color:#999;">Select a Set above.</p>
         </div>
     </div>
-
     <div class="card">
         <h3>3. Your Setlist</h3>
         <div id="setlist-inner">{% include 'inner' %}</div>
-        <button class="btn-clear" hx-post="/clear" hx-target="#setlist-inner">Clear Setlist</button>
     </div>
-
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder" value="">
-        <input type="text" name="set_name" placeholder="Output Folder Name" required>
+        <input type="text" name="set_name" placeholder="Output Set Name" required>
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
-
-    <div class="troubleshooter">
-        <strong>Path Troubleshooter:</strong><br>
-        Items detected at root: {{ debug_list }}
-    </div>
-
     <script>
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.target.id === 'library-container') {
@@ -80,7 +68,6 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-# [Rest of your Partial templates remain the same as previous turn]
 LIBRARY_PARTIAL = '''
 {% for song in library %}
 <div class="item">
@@ -106,20 +93,14 @@ def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
     folders = []
-    debug_list = "No Connection"
-    
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
-            debug_list = ", ".join([e.name for e in res.entries]) if res.entries else "Folder is empty"
-        except Exception as e:
-            debug_list = f"Error: {str(e)}"
-                
+        except: pass
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
-                                 folders=folders, setlist=session['setlist'], debug_list=debug_list)
+                                 folders=folders, setlist=session['setlist'])
 
-# [Remaining routes: /update-library, /add, /remove, /clear, /build remain same as previous version]
 @app.route('/update-library', methods=['POST'])
 def update_library():
     dbx = get_dbx()
@@ -130,9 +111,9 @@ def update_library():
             res = dbx.files_list_folder(folder_path)
             subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
             if subs:
-                master = subs[0].path_lower
-                songs = dbx.files_list_folder(master).entries
-                library = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
+                # Find PDFs in the first subfolder, ignoring case of extension
+                songs_res = dbx.files_list_folder(subs[0].path_lower)
+                library = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
         except: pass
     return render_template_string(LIBRARY_PARTIAL, library=library)
 
@@ -150,12 +131,6 @@ def remove_song():
         lst.remove(song); session['setlist'] = lst; session.modified = True
     return render_template_string(INNER_TEMPLATE, setlist=lst)
 
-@app.route('/clear', methods=['POST'])
-def clear_list():
-    session['setlist'] = []
-    session.modified = True
-    return render_template_string(INNER_TEMPLATE, setlist=[])
-
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
@@ -168,11 +143,15 @@ def build():
         for f in folders:
             writer = PdfWriter()
             items = dbx.files_list_folder(f.path_lower).entries
-            pdf_map = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
+            # Build map using lowercase keys for case-insensitive matching
+            pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
+            
             for song in setlist:
-                if song in pdf_map:
-                    _, r = dbx.files_download(pdf_map[song])
+                song_key = song.lower()
+                if song_key in pdf_map:
+                    _, r = dbx.files_download(pdf_map[song_key])
                     writer.append(io.BytesIO(r.content))
+            
             out = io.BytesIO()
             writer.write(out)
             out.seek(0)
