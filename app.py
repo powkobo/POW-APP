@@ -3,6 +3,13 @@ from flask import Flask, render_template_string, request, session
 from pypdf import PdfWriter
 
 app = Flask(__name__)
+# Temporary debug check
+@app.route('/debug-env')
+def debug_env():
+    keys = ["DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "DROPBOX_REFRESH_TOKEN", "FLASK_SECRET_KEY"]
+    found = {k: ("Found" if os.environ.get(k) else "MISSING") for k in keys}
+    return f"<h3>Environment Status:</h3>{found}"
+
 # Uses Render variable or a fallback to prevent crash
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "pow-band-2026")
 
