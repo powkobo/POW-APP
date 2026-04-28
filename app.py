@@ -15,7 +15,7 @@ def get_dbx():
     except:
         return None
 
-# Combined Template
+# --- UI TEMPLATES ---
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -37,7 +37,7 @@ HTML_TEMPLATE = '''
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
     <div class="card">
-        <h3>1. Library (Click +)</h3>
+        <h3>1. Library (Click + to add)</h3>
         <div style="max-height: 250px; overflow-y: auto;">
             {% for song in library %}
             <div class="item">
@@ -54,7 +54,7 @@ HTML_TEMPLATE = '''
     </div>
 
     <form action="/build" method="POST">
-        <input type="text" name="set_name" placeholder="Set Name (e.g. Tour 2026)" required style="width:100%; padding:12px; margin-bottom:15px; box-sizing:border-box;">
+        <input type="text" name="set_name" placeholder="Set Name (e.g. Christmas Concert)" required style="width:100%; padding:12px; margin-bottom:15px; box-sizing:border-box;">
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
 </body>
@@ -64,7 +64,7 @@ HTML_TEMPLATE = '''
 INNER_TEMPLATE = '''
 {% for song in setlist %}
 <div class="item">
-    <span>{{ loop.index }}. {{ song }}</span>
+    <span><strong>{{ loop.index }}.</strong> {{ song }}</span>
     <button class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">−</button>
 </div>
 {% endfor %}
@@ -81,56 +81,55 @@ def index():
         error = "Dropbox keys missing in Render Settings."
     else:
         try:
-            # We try a simpler path approach
-            path = "/pow pdfs/pow pdfs parts by instrument"
+            # 1. Main path (Must start with / and no trailing slash)
+            base_path = "/pow pdfs/pow pdfs parts by instrument"
             
-            # 1. List folders in that path
-            folders = dbx.files_list_folder(path).entries
-            # 2. Pick the first folder found (e.g. 01-Soprano Cornet)
-            first_folder = next(f for f in folders if isinstance(f, dropbox.files.FolderMetadata))
-            # 3. List PDFs in that folder to populate the master library
-            songs = dbx.files_list_folder(first_folder.path_lower).entries
-            library = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
+            # 2. List items and filter for ONLY folders
+            all_entries = dbx.files_list_folder(base_path).entries
+            folders = [e for e in all_entries if isinstance(e, dropbox.files.FolderMetadata)]
+            
+            if folders:
+                # Pick the first actual folder to get the song list (Agnostic approach)
+                first_folder = folders[0]
+                songs = dbx.files_list_folder(first_folder.path_lower).entries
+                library = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
+            else:
+                error = "No instrument folders found in the specified path."
         except Exception as e:
-            error = f"Path error: {str(e)}. Make sure your Dropbox folder is named correctly."
+            error = f"Path error: {str(e)}"
 
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
                                  library=library, setlist=session['setlist'], error=error)
 
 @app.route('/add', methods=['POST'])
 def add_song():
-    song = request.form.get('song')
-    lst = session.get('setlist', [])
+    song, lst = request.form.get('song'), session.get('setlist', [])
     if song and song not in lst:
-        lst.append(song)
-        session['setlist'] = lst
-        session.modified = True
+        lst.append(song); session['setlist'] = lst; session.modified = True
     return render_template_string(INNER_TEMPLATE, setlist=lst)
 
 @app.route('/remove', methods=['POST'])
 def remove_song():
-    song = request.form.get('song')
-    lst = session.get('setlist', [])
+    song, lst = request.form.get('song'), session.get('setlist', [])
     if song in lst:
-        lst.remove(song)
-        session['setlist'] = lst
-        session.modified = True
+        lst.remove(song); session['setlist'] = lst; session.modified = True
     return render_template_string(INNER_TEMPLATE, setlist=lst)
 
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
-    setlist = session.get('setlist', [])
-    set_name = request.form.get('set_name')
-    if not setlist or not dbx: return "Error: Missing data."
+    setlist, set_name = session.get('setlist', []), request.form.get('set_name')
+    if not setlist or not dbx: return "Error: Data missing."
     
     try:
         base_path = "/pow pdfs/pow pdfs parts by instrument"
-        folders = [f for f in dbx.files_list_folder(base_path).entries if isinstance(f, dropbox.files.FolderMetadata)]
+        all_entries = dbx.files_list_folder(base_path).entries
+        folders = [e for e in all_entries if isinstance(e, dropbox.files.FolderMetadata)]
         
-        for folder in folders:
+        for f in folders:
             writer = PdfWriter()
-            inst_files = {f.name: f.path_lower for f in dbx.files_list_folder(folder.path_lower).entries}
+            # Map PDFs in this specific instrument folder
+            inst_files = {e.name: e.path_lower for e in dbx.files_list_folder(f.path_lower).entries if e.name.lower().endswith('.pdf')}
             
             for song in setlist:
                 if song in inst_files:
@@ -140,7 +139,7 @@ def build():
             out = io.BytesIO()
             writer.write(out)
             out.seek(0)
-            dbx.files_upload(out.read(), f"/Generated Sets/{set_name}/{folder.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
+            dbx.files_upload(out.read(), f"/Generated Sets/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
         
         session['setlist'] = []
         return f"<h1>Success!</h1><p>Created in Dropbox: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
