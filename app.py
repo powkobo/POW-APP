@@ -19,32 +19,41 @@ def get_dbx():
         )
     except: return None
 
-# --- UI TEMPLATES ---
+# We define the setlist display as a reusable piece of code
+def render_setlist_html(setlist):
+    html = ""
+    for i, song in enumerate(setlist):
+        html += f'''
+        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee;">
+            <span>{i+1}. {song}</span>
+            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px;" 
+                    hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
+        </div>'''
+    if not setlist:
+        html = '<p style="color:#999;">No songs selected.</p>'
+    return html
+
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- FIXED HTMX LINK BELOW -->
     <script src="https://unpkg.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
         .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
         .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
-        .btn-rem { background: #dc3545; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
-        .btn-clear { background: #6c757d; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 10px; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
         select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-        .status-box { font-size: 11px; background: #333; color: #0f0; padding: 10px; border-radius: 5px; margin-top: 20px; font-family: monospace; }
     </style>
 </head>
 <body>
-    <h1>🎺 POW Set Builder</h1>
+    <h1>🎺 POW Set Downloader</h1>
     
     <div class="card">
         <h3>1. Select Set Folder</h3>
-        <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
+        <select name="folder_path" hx-post="/update-library" hx-target="#library-container">
             <option value="">-- Choose a Set --</option>
             {% for folder in folders %}
             <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
@@ -55,22 +64,15 @@ HTML_TEMPLATE = '''
     <div class="card">
         <h3>2. Library (Click +)</h3>
         <div id="library-container" style="max-height: 300px; overflow-y: auto;">
-            <p style="color:#999;">Select a Set above to load music.</p>
+            <p style="color:#999;">Select a Set above.</p>
         </div>
     </div>
 
     <div class="card">
         <h3>3. Your Setlist</h3>
-        <div id="setlist-inner">
-            {% for song in setlist %}
-            <div class="item">
-                <span>{{ loop.index }}. {{ song }}</span>
-                <button class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">−</button>
-            </div>
-            {% endfor %}
-            {% if not setlist %}<p style="color:#999;">No songs selected.</p>{% endif %}
-        </div>
-        <button class="btn-clear" hx-post="/clear" hx-target="#setlist-inner">Clear Setlist</button>
+        <div id="setlist-inner">{{ setlist_html|safe }}</div>
+        <button style="width:100%; margin-top:10px; padding:8px; background:#6c757d; color:white; border:none; border-radius:4px;" 
+                hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
     </div>
 
     <form action="/build" method="POST">
@@ -79,12 +81,12 @@ HTML_TEMPLATE = '''
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
 
-    <div class="status-box"><strong>Status:</strong> {{ status }}</div>
-
     <script>
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.target.id === 'library-container') {
-                document.getElementById('active_folder').value = document.querySelector('select[name="folder_path"]').value;
+                // Ensure the build form knows which Dropbox folder we are using
+                var folder = document.querySelector('select[name="folder_path"]').value;
+                document.getElementById('active_folder').value = folder;
             }
         });
     </script>
@@ -92,81 +94,67 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-LIBRARY_PARTIAL = '''
-{% for song in library %}
-<div class="item">
-    <span>{{ song }}</span>
-    <button class="btn-add" hx-post="/add" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">+</button>
-</div>
-{% endfor %}
-{% if not library %}<p style="color:#999;">No PDFs found in this Set.</p>{% endif %}
-'''
-
-INNER_TEMPLATE = '''
-{% for song in setlist %}
-<div class="item">
-    <span>{{ loop.index }}. {{ song }}</span>
-    <button class="btn-rem" hx-post="/remove" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">−</button>
-</div>
-{% endfor %}
-{% if not setlist %}<p style="color:#999;">No songs selected.</p>{% endif %}
-'''
-
 @app.route('/')
 def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
-    folders, status = [], "Connecting..."
+    folders = []
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
-            status = f"Connected! Found {len(folders)} sets." if folders else "Connected, but root is empty."
-        except Exception as e: status = f"Error: {e}"
-    else: status = "Error: DROPBOX_REFRESH_TOKEN missing."
-    return render_template_string(HTML_TEMPLATE, folders=folders, setlist=session['setlist'], status=status)
+        except: pass
+    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
 @app.route('/update-library', methods=['POST'])
 def update_library():
     dbx = get_dbx()
-    folder_path = request.form.get('folder_path')
-    library = []
-    if dbx and folder_path:
+    path = request.form.get('folder_path')
+    html = ""
+    if dbx and path:
         try:
-            res = dbx.files_list_folder(folder_path)
-            subs = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-            if subs:
-                # Scans the first instrument folder (e.g., Soprano) to build the song list
-                songs_res = dbx.files_list_folder(subs[0].path_lower)
-                library = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
-        except Exception as e:
-            return f"<p style='color:red;'>Error reading folder: {e}</p>"
-    return render_template_string(LIBRARY_PARTIAL, library=library)
+            # Find the first instrument subfolder
+            res = dbx.files_list_folder(path)
+            sub = next(e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata))
+            songs = dbx.files_list_folder(sub.path_lower).entries
+            pdf_names = sorted([s.name for s in songs if s.name.lower().endswith('.pdf')])
+            for name in pdf_names:
+                html += f'''
+                <div class="item">
+                    <span>{name}</span>
+                    <button class="btn-add" hx-post="/add" hx-vals='{{"song": "{name}"}}' hx-target="#setlist-inner">+</button>
+                </div>'''
+        except: html = "<p>No PDFs found.</p>"
+    return html
 
 @app.route('/add', methods=['POST'])
 def add_song():
-    song, lst = request.form.get('song'), session.get('setlist', [])
+    song = request.form.get('song')
+    lst = session.get('setlist', [])
     if song and song not in lst:
-        lst.append(song); session['setlist'] = lst; session.modified = True
-    return render_template_string(INNER_TEMPLATE, setlist=lst)
+        lst.append(song)
+        session['setlist'] = lst
+    return render_setlist_html(session['setlist'])
 
 @app.route('/remove', methods=['POST'])
 def remove_song():
-    song, lst = request.form.get('song'), session.get('setlist', [])
+    song = request.form.get('song')
+    lst = session.get('setlist', [])
     if song in lst:
-        lst.remove(song); session['setlist'] = lst; session.modified = True
-    return render_template_string(INNER_TEMPLATE, setlist=lst)
+        lst.remove(song)
+        session['setlist'] = lst
+    return render_setlist_html(session['setlist'])
 
 @app.route('/clear', methods=['POST'])
-def clear_list():
+def clear():
     session['setlist'] = []
-    session.modified = True
-    return render_template_string(INNER_TEMPLATE, setlist=[])
+    return render_setlist_html([])
 
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
-    setlist, set_name = session.get('setlist', []), request.form.get('set_name')
+    setlist = session.get('setlist', [])
+    set_name = request.form.get('set_name')
     active_folder = request.form.get('active_folder')
     if not setlist or not dbx or not active_folder: return "Error: Select set/add songs."
     try:
@@ -185,7 +173,7 @@ def build():
             out.seek(0)
             dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
         session['setlist'] = []
-        return f"<h1>Success!</h1><p>Check Dropbox: /Generated/{set_name}</p><a href='/'>Back</a>"
+        return f"<h1>Success!</h1><p>Created in /Generated/{set_name}</p><a href='/'>Back</a>"
     except Exception as e: return f"<h1>Error</h1><p>{str(e)}</p>"
 
 if __name__ == '__main__':
