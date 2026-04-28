@@ -29,12 +29,16 @@ HTML_TEMPLATE = '''
         .btn-add { background: #28a745; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .btn-rem { background: #dc3545; color: white; border: none; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
         .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
-        .error { color: #b00; background: #fee; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
+        .error { background: #fee; color: #b00; padding: 10px; border: 1px solid #b00; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
+        .debug { font-size: 10px; color: #999; margin-top: 20px; }
     </style>
 </head>
 <body>
     <h1>🎺 POW Set Builder</h1>
-    {% if error %}<div class="error"><strong>Notice:</strong> {{ error }}</div>{% endif %}
+    
+    {% if error %}
+    <div class="error"><strong>Notice:</strong> {{ error }}</div>
+    {% endif %}
 
     <div class="card">
         <h3>1. Library (Click +)</h3>
@@ -45,7 +49,7 @@ HTML_TEMPLATE = '''
                 <button class="btn-add" hx-post="/add" hx-vals='{"song": "{{ song }}"}' hx-target="#setlist-inner">+</button>
             </div>
             {% endfor %}
-            {% if not library and not error %}<p>No PDFs found.</p>{% endif %}
+            {% if not library and not error %}<p>Searching for instrument folders...</p>{% endif %}
         </div>
     </div>
 
@@ -72,13 +76,26 @@ INNER_TEMPLATE = '''
 {% if not setlist %}<p style="color:#999;">No songs selected.</p>{% endif %}
 '''
 
-def find_folders(dbx, path):
-    """Safely finds folders only, avoiding files that cause 'unsupported_content_type'."""
+def scan_for_library(dbx, path):
+    """Recursively looks for a folder that contains PDFs to build the library."""
     try:
         res = dbx.files_list_folder(path)
-        return [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+        entries = res.entries
+        
+        # 1. Check if this folder itself has PDFs
+        pdfs = sorted([e.name for e in entries if e.name.lower().endswith('.pdf')])
+        if pdfs:
+            return pdfs, path
+        
+        # 2. If not, look inside subfolders (like 01-Soprano Cornet)
+        for e in entries:
+            if isinstance(e, dropbox.files.FolderMetadata):
+                sub_pdfs, sub_path = scan_for_library(dbx, e.path_lower)
+                if sub_pdfs:
+                    return sub_pdfs, path # Return the 'parent' path where all instrument folders are
+        return [], None
     except:
-        return []
+        return [], None
 
 @app.route('/')
 def index():
@@ -87,31 +104,14 @@ def index():
     library, error = [], None
 
     if not dbx:
-        error = "Dropbox credentials missing in Render."
+        error = "Credentials missing in Render."
     else:
-        # We check three possible paths to see where your files are hidden
-        potential_paths = [
-            "/POW PDFs/POW PDFs Parts by instrument",
-            "/POW PDFs Parts by instrument",
-            "" # The root of the app folder
-        ]
-        
-        folders = []
-        for p in potential_paths:
-            folders = find_folders(dbx, p)
-            if folders:
-                session['last_path'] = p # Save the one that worked
-                break
-        
-        if folders:
-            try:
-                # Use the first instrument folder to build the song list
-                songs_res = dbx.files_list_folder(folders[0].path_lower)
-                library = sorted([s.name for s in songs_res.entries if s.name.lower().endswith('.pdf')])
-            except Exception as e:
-                error = f"Found folders but couldn't read songs: {e}"
+        # Start scanning from the root to find your music
+        library, parent_path = scan_for_library(dbx, "")
+        if parent_path:
+            session['music_root'] = parent_path
         else:
-            error = "Could not find your instrument folders. Ensure they are uploaded to Dropbox."
+            error = "Could not find any folders containing PDFs. Please check your Dropbox."
 
     return render_template_string(HTML_TEMPLATE.replace("{% include 'inner' %}", INNER_TEMPLATE), 
                                  library=library, setlist=session['setlist'], error=error)
@@ -134,21 +134,25 @@ def remove_song():
 def build():
     dbx = get_dbx()
     setlist, set_name = session.get('setlist', []), request.form.get('set_name')
-    path = session.get('last_path', "")
+    root = session.get('music_root', "")
     
     if not setlist or not dbx: return "Error: Data missing."
     
     try:
-        folders = find_folders(dbx, path)
+        # Get all 19 instrument folders in the root we found
+        res = dbx.files_list_folder(root)
+        folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+        
         for f in folders:
             writer = PdfWriter()
+            # Map PDFs in this specific instrument folder
             items = dbx.files_list_folder(f.path_lower).entries
             inst_files = {e.name: e.path_lower for e in items if e.name.lower().endswith('.pdf')}
             
             for song in setlist:
                 if song in inst_files:
-                    _, res = dbx.files_download(inst_files[song])
-                    writer.append(io.BytesIO(res.content))
+                    _, res_file = dbx.files_download(inst_files[song])
+                    writer.append(io.BytesIO(res_file.content))
             
             out = io.BytesIO()
             writer.write(out)
@@ -158,7 +162,7 @@ def build():
         session['setlist'] = []
         return f"<h1>Success!</h1><p>Created: /Generated Sets/{set_name}</p><a href='/'>Back</a>"
     except Exception as e:
-        return f"<h1>Build Error</h1><p>{str(e)}</p><a href='/'>Try Again</a>"
+        return f"<h1>Build Error</h1><p>{str(e)}</p><a href='/'>Back</a>"
 
 if __name__ == '__main__':
     app.run()
