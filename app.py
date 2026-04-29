@@ -94,7 +94,12 @@ select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 
     <div class="card">
         <h3>3. Regimental Marches</h3>
         <input id="regSearch" placeholder="Search" onkeyup="filterReg()">
-        <div id="regimental-container" hx-post="/update-regimental" hx-trigger="load"></div>
+        <div id="regimental-container"></div>
+<script>
+window.addEventListener("load", function() {
+    htmx.ajax("POST", "/update-regimental", "#regimental-container");
+});
+</script>
     </div>
 
     <div class="card">
