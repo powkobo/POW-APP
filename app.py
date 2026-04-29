@@ -164,7 +164,10 @@ def update_library():
                             continue
                         seen.add(key)
                         safe = html.escape(file.name, quote=True)
-                        html_out += f'<div class="item"><span>{safe}</span><button hx-post="/add" data-song="{safe}" hx-vals="js:{song: this.getAttribute(\"data-song\")}" hx-target="#setlist-inner">+</button></div>'
+                        html_out += f'''<div class="item">
+<span>{safe}</span>
+<button hx-post="/add" hx-vals='{{"song":"{safe}"}}' hx-target="#setlist-inner">+</button>
+</div>'''
 
         LIB_CACHE[path] = html_out
         return html_out
