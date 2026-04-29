@@ -111,8 +111,7 @@ window.addEventListener("load", function() {
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder">
         <input type="text" name="set_name" placeholder="Output Folder Name" required>
-        <label><input type="checkbox" name="music_makers"> Add Music Makers</label>
-        <button class="build-btn" type="submit">BUILD</button>
+                <button class="build-btn" type="submit">BUILD</button>
     </form>
 
     <div id="status-box">
