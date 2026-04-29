@@ -41,46 +41,114 @@ def login():
 
 
 def render_setlist_html(setlist):
-    out = ""
+    html_out = ""
     for i, song in enumerate(setlist):
         safe = html.escape(song, quote=True)
-        out += f'<div><span>{i+1}. {safe}</span><button hx-post="/remove" name="song" value="{safe}" hx-target="#setlist-inner">×</button></div>'
-    return out if setlist else '<p>No songs selected.</p>'
+        html_out += f'''
+        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee; align-items:center;">
+            <span>{i+1}. {safe}</span>
+            <div>
+                <button hx-post="/move" hx-vals='{{"index": {i}, "dir": "up"}}' hx-target="#setlist-inner">↑</button>
+                <button hx-post="/move" hx-vals='{{"index": {i}, "dir": "down"}}' hx-target="#setlist-inner">↓</button>
+                <button hx-post="/remove" name="song" value="{safe}" hx-target="#setlist-inner">×</button>
+            </div>
+        </div>'''
+    return html_out if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
 
 
-HTML = '''
+HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+<style>
+body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
+.card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
+.item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
+.btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+.build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
+select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+#status-box { font-size: 11px; background: #333; color: #0f0; padding: 10px; border-radius: 5px; min-height: 40px; margin-top: 20px; }
+</style>
 </head>
 <body>
-<h2>Builder</h2>
-<select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#lib"></select>
-<div id="lib"></div>
-<div id="setlist-inner">{{setlist|safe}}</div>
-<form method="POST" action="/build">
-<input name="set_name">
-<button>Build</button>
-</form>
-<div id="status"></div>
+    <h1>🎺 POW Set Downloader</h1>
+    
+    <div class="card">
+        <h3>1. Select Set Folder</h3>
+        <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
+            <option value="">-- Choose a Set --</option>
+            {% for folder in folders %}
+            <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="card">
+        <h3>2. Library (Click +)</h3>
+        <input id="libSearch" placeholder="Search" onkeyup="filterLib()">
+        <div id="library-container"></div>
+    </div>
+
+    <div class="card">
+        <h3>3. Regimental Marches</h3>
+        <input id="regSearch" placeholder="Search" onkeyup="filterReg()">
+        <div id="regimental-container" hx-post="/update-regimental" hx-trigger="load"></div>
+    </div>
+
+    <div class="card">
+        <h3>4. Your Setlist</h3>
+        <div id="setlist-inner">{{ setlist_html|safe }}</div>
+        <button hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
+    </div>
+
+    <form action="/build" method="POST">
+        <input type="hidden" id="active_folder" name="active_folder">
+        <input type="text" name="set_name" placeholder="Output Folder Name" required>
+        <label><input type="checkbox" name="music_makers"> Add Music Makers</label>
+        <button class="build-btn" type="submit">BUILD</button>
+    </form>
+
+    <div id="status-box">
+        <strong>Status:</strong> <span id="status-text"></span>
+    </div>
+
 <script>
+function filterLib(){
+ let q=document.getElementById('libSearch').value.toLowerCase();
+ document.querySelectorAll('.lib-item').forEach(e=>{
+  e.style.display=e.innerText.toLowerCase().includes(q)?'flex':'none';
+ });
+}
+function filterReg(){
+ let q=document.getElementById('regSearch').value.toLowerCase();
+ document.querySelectorAll('.reg-item').forEach(e=>{
+  e.style.display=e.innerText.toLowerCase().includes(q)?'flex':'none';
+ });
+}
 setInterval(()=>{
-fetch('/status').then(r=>r.json()).then(d=>{
- document.getElementById('status').innerText = d.text + ' ' + d.progress + '%';
-});
+ fetch('/status').then(r=>r.json()).then(d=>{
+  document.getElementById('status-text').innerText = d.text + ' ' + d.progress + '%';
+ });
 },1000);
 </script>
 </body>
 </html>
 '''
 
-
 @app.route('/')
 def index():
     session.setdefault('setlist', [])
-    return render_template_string(HTML, setlist=render_setlist_html(session['setlist']))
-
+    dbx = get_dbx()
+    folders = []
+    if dbx:
+        try:
+            res = dbx.files_list_folder("")
+            folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+        except:
+            pass
+    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
 @app.route('/update-library', methods=['POST'])
 def update_library():
@@ -90,93 +158,94 @@ def update_library():
         return ""
     res = dbx.files_list_folder(path)
     out = ""
+    seen=set()
     for e in res.entries:
         if isinstance(e, dropbox.files.FolderMetadata):
-            sub = dbx.files_list_folder(e.path_lower)
+            sub=dbx.files_list_folder(e.path_lower)
             for f in sub.entries:
                 if f.name.lower().endswith('.pdf'):
-                    safe = html.escape(f.name, quote=True)
-                    out += f'<div>{safe}<button name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button></div>'
+                    k=f.name.lower()
+                    if k in seen: continue
+                    seen.add(k)
+                    safe=html.escape(f.name)
+                    out+=f'<div class="lib-item item"><span>{safe}</span><button class="btn-add" name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button></div>'
     return out
 
+@app.route('/update-regimental', methods=['POST'])
+def update_regimental():
+    dbx=get_dbx()
+    if not dbx: return ""
+    res=dbx.files_list_folder("Regimental marches")
+    out=""
+    seen=set()
+    for f in res.entries:
+        if f.name.lower().endswith('.pdf'):
+            k=f.name.lower()
+            if k in seen: continue
+            seen.add(k)
+            safe=html.escape(f.name)
+            out+=f'<div class="reg-item item"><span>{safe}</span><button class="btn-add" name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button></div>'
+    return out
 
 @app.route('/add', methods=['POST'])
 def add():
-    song = request.form.get('song')
-    lst = session.get('setlist', [])
+    song=request.form.get('song')
+    lst=session.get('setlist',[])
     if song and song not in lst:
         lst.append(song)
-    session['setlist'] = lst
+    session['setlist']=lst
     return render_setlist_html(lst)
-
 
 @app.route('/remove', methods=['POST'])
 def remove():
-    song = request.form.get('song')
-    lst = session.get('setlist', [])
-    if song in lst:
-        lst.remove(song)
-    session['setlist'] = lst
+    song=request.form.get('song')
+    lst=session.get('setlist',[])
+    if song in lst: lst.remove(song)
+    session['setlist']=lst
     return render_setlist_html(lst)
 
+@app.route('/move', methods=['POST'])
+def move():
+    i=int(request.form.get('index'))
+    d=request.form.get('dir')
+    lst=session.get('setlist',[])
+    if d=='up' and i>0: lst[i],lst[i-1]=lst[i-1],lst[i]
+    if d=='down' and i<len(lst)-1: lst[i],lst[i+1]=lst[i+1],lst[i]
+    session['setlist']=lst
+    return render_setlist_html(lst)
 
-def build_worker(setlist, set_name, active_folder):
-    dbx = get_dbx()
-    BUILD_STATUS["running"] = True
-    BUILD_STATUS["progress"] = 0
+@app.route('/clear', methods=['POST'])
+def clear():
+    session['setlist']=[]
+    return render_setlist_html([])
 
-    res = dbx.files_list_folder(active_folder)
-    folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
-
-    pdf_cache = {}
-    for song in setlist:
-        for f in folders:
-            items = dbx.files_list_folder(f.path_lower).entries
-            for e in items:
-                if e.name.lower() == song.lower():
-                    _, r = dbx.files_download(e.path_lower)
-                    pdf_cache[song.lower()] = r.content
-                    break
-
-    total = len(folders)
-
-    for i, f in enumerate(folders):
-        writer = PdfWriter()
+def build_worker(setlist,set_name,active_folder):
+    dbx=get_dbx()
+    BUILD_STATUS.update({"running":True,"progress":0})
+    res=dbx.files_list_folder(active_folder)
+    folders=[f for f in res.entries if isinstance(f,dropbox.files.FolderMetadata)]
+    for i,f in enumerate(folders):
+        writer=PdfWriter()
+        items=dbx.files_list_folder(f.path_lower).entries
+        pdf_map={e.name.lower():e.path_lower for e in items if e.name.lower().endswith('.pdf')}
         for song in setlist:
-            if song.lower() in pdf_cache:
-                writer.append(io.BytesIO(pdf_cache[song.lower()]))
-
-        out = io.BytesIO()
+            if song.lower() in pdf_map:
+                _,r=dbx.files_download(pdf_map[song.lower()])
+                writer.append(io.BytesIO(r.content))
+        out=io.BytesIO()
         writer.write(out)
         out.seek(0)
+        dbx.files_upload(out.read(),f"/Generated/{set_name}/{f.name}-{set_name}.pdf",mode=dropbox.files.WriteMode.overwrite)
+        BUILD_STATUS.update({"progress":int((i+1)/len(folders)*100),"text":f.name})
+    BUILD_STATUS.update({"running":False,"text":"Done"})
 
-        dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}-{set_name}.pdf", mode=dropbox.files.WriteMode.overwrite)
-
-        BUILD_STATUS["progress"] = int((i+1)/total*100)
-        BUILD_STATUS["text"] = f"Processing {f.name}"
-
-    BUILD_STATUS["text"] = "Done"
-    BUILD_STATUS["running"] = False
-
-
-@app.route('/build', methods=['POST'])
+@app.route('/build',methods=['POST'])
 def build():
-    if BUILD_STATUS["running"]:
-        return "Already running"
-
-    setlist = session.get('setlist', [])
-    set_name = request.form.get('set_name')
-    active_folder = request.form.get('active_folder')
-
-    threading.Thread(target=build_worker, args=(setlist, set_name, active_folder)).start()
-
+    if BUILD_STATUS["running"]: return "Busy"
+    threading.Thread(target=build_worker,args=(session.get('setlist',[]),request.form.get('set_name'),request.form.get('active_folder'))).start()
     return redirect('/')
 
-
 @app.route('/status')
-def status():
-    return jsonify(BUILD_STATUS)
+def status(): return jsonify(BUILD_STATUS)
 
-
-if __name__ == '__main__':
-    app.run()
+if __name__=='__main__': app.run()
