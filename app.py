@@ -174,11 +174,16 @@ def update_library():
         res = dbx.files_list_folder(path)
         html_out = ""
 
+                seen = set()
         for entry in res.entries:
             if isinstance(entry, dropbox.files.FolderMetadata):
                 sub = dbx.files_list_folder(entry.path_lower)
                 for file in sub.entries:
                     if isinstance(file, dropbox.files.FileMetadata) and file.name.lower().endswith('.pdf'):
+                        name_key = file.name.lower()
+                        if name_key in seen:
+                            continue
+                        seen.add(name_key)
                         safe = html.escape(file.name, quote=True)
                         html_out += f'''<div class="item"><span>{safe}</span><button class="btn-add" hx-post="/add" hx-vals='{{"song": "{safe}"}}' hx-target="#setlist-inner">+</button></div>'''
 
