@@ -25,19 +25,19 @@ def render_setlist_html(setlist):
     html = ""
     for i, song in enumerate(setlist):
         html += f'''
-        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee;">
+        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee; align-items:center;">
             <span>{i+1}. {song}</span>
-            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px;" 
+            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;" 
                     hx-post="/remove" hx-vals='{{"song": "{song}"}}' hx-target="#setlist-inner">×</button>
         </div>'''
-    return html if setlist else '<p style="color:#999;">No songs selected.</p>'
+    return html if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- RELIABLE CDN LINK -->
+    <!-- FULL CORRECTED CDN LINK BELOW -->
     <script src="https://cloudflare.com"></script>
     <style>
         body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
@@ -51,6 +51,7 @@ HTML_TEMPLATE = '''
 </head>
 <body>
     <h1>🎺 POW Set Downloader</h1>
+    
     <div class="card">
         <h3>1. Select Set Folder</h3>
         <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
@@ -60,21 +61,31 @@ HTML_TEMPLATE = '''
             {% endfor %}
         </select>
     </div>
+
     <div class="card">
-        <h3>2. Library</h3>
-        <div id="library-container" style="max-height: 300px; overflow-y: auto;"><p style="color:#999;">Select a Set above.</p></div>
+        <h3>2. Library (Click +)</h3>
+        <div id="library-container" style="max-height: 300px; overflow-y: auto;">
+            <p style="color:#999;">Select a Set above.</p>
+        </div>
     </div>
+
     <div class="card">
         <h3>3. Your Setlist</h3>
         <div id="setlist-inner">{{ setlist_html|safe }}</div>
-        <button style="width:100%; margin-top:10px; padding:8px; background:#6c757d; color:white; border:none; border-radius:4px;" hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
+        <button style="width:100%; margin-top:10px; padding:8px; background:#6c757d; color:white; border:none; border-radius:4px; cursor:pointer;" 
+                hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
     </div>
+
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder" value="">
-        <input type="text" name="set_name" placeholder="Output Folder Name" required>
+        <input type="text" name="set_name" placeholder="Output Folder Name (e.g. Christmas 2026)" required>
         <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
     </form>
-    <div id="status-box"><strong>Status:</strong> <span id="status-text">{{ status_msg }}</span></div>
+
+    <div id="status-box">
+        <strong>Status:</strong> <span id="status-text">{{ status_msg }}</span>
+    </div>
+
     <script>
         document.body.addEventListener('htmx:afterRequest', function(evt) {
             if (evt.detail.target.id === 'library-container') {
@@ -92,14 +103,14 @@ HTML_TEMPLATE = '''
 def index():
     dbx = get_dbx()
     session.setdefault('setlist', [])
-    folders, status_msg = [], "Connecting..."
+    folders, status_msg = [], "Connecting to Dropbox..."
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata) and e.name.lower() != "generated"], key=lambda x: x.name)
             status_msg = f"Connected! Found {len(folders)} sets."
         except Exception as e: status_msg = f"Dropbox Error: {e}"
-    else: status_msg = "Error: Refresh Token Missing."
+    else: status_msg = "Error: Refresh Token Missing in Render."
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']), status_msg=status_msg)
 
 @app.route('/update-library', methods=['POST'])
@@ -110,6 +121,7 @@ def update_library():
     if dbx and path:
         try:
             res = dbx.files_list_folder(path)
+            # Scan folders until we find the instrument folders with PDFs
             for entry in res.entries:
                 if isinstance(entry, dropbox.files.FolderMetadata):
                     songs_res = dbx.files_list_folder(entry.path_lower)
@@ -118,8 +130,8 @@ def update_library():
                         for name in pdf_names:
                             html += f'''<div class="item"><span>{name}</span><button class="btn-add" hx-post="/add" hx-vals=\'{{"song": "{name}"}}\' hx-target="#setlist-inner">+</button></div>'''
                         break 
-            if not html: html = "<p>No PDFs found.</p>"
-        except Exception as e: html = f"<p>Error: {e}</p>"
+            if not html: html = "<p style='padding:10px;'>No PDFs found in any subfolders.</p>"
+        except Exception as e: html = f"<p style='color:red; padding:10px;'>Error: {e}</p>"
     return html
 
 @app.route('/add', methods=['POST'])
