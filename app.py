@@ -1,5 +1,5 @@
-import os, io, dropbox, html
-from flask import Flask, render_template_string, request, session, redirect, url_for, send_file
+import os, io, dropbox, html, zipfile, time
+from flask import Flask, render_template_string, request, session, redirect, url_for, send_file, jsonify
 from pypdf import PdfWriter
 
 app = Flask(__name__)
@@ -10,6 +10,8 @@ APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 LIB_CACHE = {}
+BUILD_PROGRESS = {}
+ZIP_STORE = {}
 
 
 def get_dbx():
@@ -34,6 +36,8 @@ def require_login():
         return
     if session.get("auth") is not True:
         return redirect(url_for("login"))
+    if "sid" not in session:
+        session["sid"] = str(time.time())
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -41,6 +45,7 @@ def login():
     if request.method == "POST":
         if request.form.get("password") == APP_PASSWORD:
             session["auth"] = True
+            session["sid"] = str(time.time())
             return redirect(url_for("index"))
     return """
     <form method="POST" style="max-width:300px;margin:100px auto;font-family:sans-serif;">
@@ -77,16 +82,16 @@ HTML_TEMPLATE = '''
 body{font-family:sans-serif;max-width:500px;margin:auto;padding:20px;background:#f4f4f4}
 .card{background:white;border:1px solid #ddd;padding:15px;border-radius:8px;margin-bottom:20px}
 .build-btn{width:100%;padding:15px;background:#007bff;color:white;border:none;border-radius:8px;font-weight:bold;font-size:18px}
-.item button{margin-left:5px}
+#bar{height:20px;background:#ddd;border-radius:10px;overflow:hidden}
+#bar-inner{height:100%;width:0%;background:#28a745;transition:0.3s}
 </style>
 </head>
 <body>
-<h1>🎺 POW Set Downloader</h1>
+<h1>🎺 Set Builder</h1>
 
 <div class="card">
-<h3>1. Select Set Folder</h3>
 <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
-<option value="">-- Choose --</option>
+<option value="">Select set</option>
 {% for folder in folders %}
 <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
 {% endfor %}
@@ -94,29 +99,40 @@ body{font-family:sans-serif;max-width:500px;margin:auto;padding:20px;background:
 </div>
 
 <div class="card">
-<h3>2. Library</h3>
+<h3>Library</h3>
 <div id="library-container"></div>
 </div>
 
 <div class="card">
-<h3>3. Setlist</h3>
+<h3>Setlist</h3>
 <div id="setlist-inner">{{ setlist_html|safe }}</div>
-<button hx-post="/clear" hx-target="#setlist-inner">Clear</button>
 </div>
 
 <form method="POST" action="/build">
 <input type="hidden" id="active_folder" name="active_folder">
-<input name="set_name" placeholder="Set name" required>
+<input name="set_name" required placeholder="Set name">
 <button class="build-btn">BUILD</button>
 </form>
 
+<div class="card">
+<h3>Status</h3>
+<div id="status">Idle</div>
+<div id="bar"><div id="bar-inner"></div></div>
+<div id="download"></div>
+</div>
+
 <script>
-document.body.addEventListener('htmx:afterRequest', function(evt){
-    if(evt.detail.target.id==='library-container'){
-        document.getElementById('active_folder').value=document.querySelector('select').value;
-    }
+setInterval(()=>{
+fetch('/progress').then(r=>r.json()).then(d=>{
+if(!d) return;
+document.getElementById('status').innerText=d.message;
+let p=0;
+if(d.total>0) p=(d.current/d.total)*100;
+document.getElementById('bar-inner').style.width=p+'%';
 });
+},500);
 </script>
+
 </body>
 </html>
 '''
@@ -126,8 +142,8 @@ document.body.addEventListener('htmx:afterRequest', function(evt){
 def index():
     session.setdefault('setlist', [])
     dbx = get_dbx()
-
     folders = []
+
     if dbx:
         try:
             res = dbx.files_list_folder("")
@@ -136,6 +152,12 @@ def index():
             pass
 
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
+
+
+@app.route('/progress')
+def progress():
+    sid = session.get('sid')
+    return jsonify(BUILD_PROGRESS.get(sid, {"message":"Idle","current":0,"total":0}))
 
 
 @app.route('/update-library', methods=['POST'])
@@ -164,10 +186,7 @@ def update_library():
                             continue
                         seen.add(key)
                         safe = html.escape(file.name, quote=True)
-                        html_out += f'''<div class="item">
-<span>{safe}</span>
-<button hx-post="/add" hx-vals='{{"song":"{safe}"}}' hx-target="#setlist-inner">+</button>
-</div>'''
+                        html_out += f'<div>{safe}<button hx-post="/add" hx-vals="{{\"song\":\"{safe}\"}}" hx-target="#setlist-inner">+</button></div>'
 
         LIB_CACHE[path] = html_out
         return html_out
@@ -179,7 +198,7 @@ def update_library():
 def add_song():
     song = request.form.get('song')
     lst = session.get('setlist', [])
-    if song and song not in lst and len(lst) < 50:
+    if song and song not in lst:
         lst.append(song)
     session['setlist'] = lst
     return render_setlist_html(lst)
@@ -210,33 +229,33 @@ def move():
     return render_setlist_html(lst)
 
 
-@app.route('/clear', methods=['POST'])
-def clear():
-    session['setlist'] = []
-    return render_setlist_html([])
-
-
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
     setlist = session.get('setlist', [])
     set_name = request.form.get('set_name')
     active_folder = request.form.get('active_folder')
+    sid = session.get('sid')
 
     if not dbx or not setlist or not active_folder:
         return "Error"
 
     try:
+        res = dbx.files_list_folder(active_folder)
+        folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
+
+        BUILD_PROGRESS[sid] = {"message":"Starting","current":0,"total":len(folders)}
+
+        zip_buffer = io.BytesIO()
+        zipf = zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED)
+
         try:
             dbx.files_create_folder_v2(f"/Generated/{set_name}")
         except:
             pass
 
-        res = dbx.files_list_folder(active_folder)
-
-        for f in res.entries:
-            if not isinstance(f, dropbox.files.FolderMetadata):
-                continue
+        for idx, f in enumerate(folders):
+            BUILD_PROGRESS[sid] = {"message":f"Processing {f.name}","current":idx+1,"total":len(folders)}
 
             writer = PdfWriter()
             items = dbx.files_list_folder(f.path_lower).entries
@@ -254,13 +273,34 @@ def build():
             writer.write(out)
             out.seek(0)
 
-            dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}-{set_name}.pdf", mode=dropbox.files.WriteMode.overwrite)
+            filename = f"{f.name}-{set_name}.pdf"
+            path = f"/Generated/{set_name}/{filename}"
 
+            dbx.files_upload(out.read(), path, mode=dropbox.files.WriteMode.overwrite)
+
+            zipf.writestr(filename, out.getvalue())
+
+        zipf.close()
+        zip_buffer.seek(0)
+
+        ZIP_STORE[sid] = zip_buffer.getvalue()
+
+        BUILD_PROGRESS[sid] = {"message":"Done","current":len(folders),"total":len(folders)}
         session['setlist'] = []
-        return "<h1>Done</h1><a href='/'>Back</a>"
+
+        return f"<h1>Done</h1><a href='/download-zip'>Download ZIP</a><br><a href='/'>Back</a>"
 
     except Exception as e:
         return str(e)
+
+
+@app.route('/download-zip')
+def download_zip():
+    sid = session.get('sid')
+    data = ZIP_STORE.get(sid)
+    if not data:
+        return "No file"
+    return send_file(io.BytesIO(data), download_name="set.zip", as_attachment=True)
 
 
 if __name__ == '__main__':
