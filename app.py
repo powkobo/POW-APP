@@ -171,9 +171,12 @@ def update_library():
         html_out = ""
 
         for entry in res.entries:
-            if isinstance(entry, dropbox.files.FileMetadata) and entry.name.lower().endswith('.pdf'):
-                safe = html.escape(entry.name)
-                html_out += f'''<div class="item"><span>{safe}</span><button class="btn-add" hx-post="/add" hx-vals='{{"song": "{safe}"}}' hx-target="#setlist-inner">+</button></div>'''
+            if isinstance(entry, dropbox.files.FolderMetadata):
+                sub = dbx.files_list_folder(entry.path_lower)
+                for file in sub.entries:
+                    if isinstance(file, dropbox.files.FileMetadata) and file.name.lower().endswith('.pdf'):
+                        safe = html.escape(file.name, quote=True)
+                        html_out += f'''<div class="item"><span>{safe}</span><button class="btn-add" hx-post="/add" hx-vals='{{"song": "{safe}"}}' hx-target="#setlist-inner">+</button></div>'''
 
         return html_out or "<p style='padding:10px;'>No PDFs found.</p>"
     except Exception as e:
