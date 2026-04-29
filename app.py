@@ -185,10 +185,7 @@ def update_library():
                         out += f'''
                         <div class="lib-item" style="display:flex;justify-content:space-between;padding:5px;">
                             <span>{safe}</span>
-                            <button hx-post="/add" 
-                                    hx-vals='js:{song:this.dataset.song}'
-                                    data-song="{safe}"
-                                    hx-target="#setlist-inner">+</button>
+                            <button name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button>
                         </div>'''
 
         LIB_CACHE[path] = out
@@ -222,10 +219,7 @@ def update_regimental():
                 out += f'''
                 <div class="reg-item" style="display:flex;justify-content:space-between;padding:5px;">
                     <span>{safe}</span>
-                    <button hx-post="/add" 
-                            hx-vals='js:{song:this.dataset.song}'
-                            data-song="{safe}"
-                            hx-target="#setlist-inner">+</button>
+                    <button name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button>
                 </div>'''
 
         REG_CACHE[path] = out
