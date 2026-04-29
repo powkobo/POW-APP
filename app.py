@@ -1,5 +1,5 @@
-import os, io, dropbox, html, uuid
-from flask import Flask, render_template_string, request, session, redirect, url_for, send_file, jsonify
+import os, io, dropbox, html
+from flask import Flask, render_template_string, request, session, redirect, url_for, send_file
 from pypdf import PdfWriter
 
 app = Flask(__name__)
@@ -10,7 +10,6 @@ APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 LIB_CACHE = {}
-BUILD_PROGRESS = {}
 
 
 def get_dbx():
@@ -36,16 +35,12 @@ def require_login():
     if session.get("auth") is not True:
         return redirect(url_for("login"))
 
-    if "sid" not in session:
-        session["sid"] = str(uuid.uuid4())
-
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         if request.form.get("password") == APP_PASSWORD:
             session["auth"] = True
-            session["sid"] = str(uuid.uuid4())
             return redirect(url_for("index"))
     return """
     <form method="POST" style="max-width:300px;margin:100px auto;font-family:sans-serif;">
@@ -59,17 +54,17 @@ def login():
 def render_setlist_html(setlist):
     html_out = ""
     for i, song in enumerate(setlist):
-        safe_song = html.escape(song, quote=True)
+        safe = html.escape(song, quote=True)
         html_out += f'''
-        <div class="item" draggable="true" style="display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #eee;align-items:center;">
-            <span>{i+1}. {safe_song}</span>
+        <div class="item" style="display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #eee;align-items:center;">
+            <span>{i+1}. {safe}</span>
             <div>
                 <button hx-post="/move" hx-vals='{{"index": {i}, "dir": "up"}}' hx-target="#setlist-inner">↑</button>
                 <button hx-post="/move" hx-vals='{{"index": {i}, "dir": "down"}}' hx-target="#setlist-inner">↓</button>
-                <button hx-post="/remove" hx-vals='{{"song": "{safe_song}"}}' hx-target="#setlist-inner">×</button>
+                <button hx-post="/remove" hx-vals='{{"song": "{safe}"}}' hx-target="#setlist-inner">×</button>
             </div>
         </div>'''
-    return html_out if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
+    return html_out if setlist else '<p style="color:#999;padding:10px;">No songs selected.</p>'
 
 
 HTML_TEMPLATE = '''
@@ -82,14 +77,16 @@ HTML_TEMPLATE = '''
 body{font-family:sans-serif;max-width:500px;margin:auto;padding:20px;background:#f4f4f4}
 .card{background:white;border:1px solid #ddd;padding:15px;border-radius:8px;margin-bottom:20px}
 .build-btn{width:100%;padding:15px;background:#007bff;color:white;border:none;border-radius:8px;font-weight:bold;font-size:18px}
+.item button{margin-left:5px}
 </style>
 </head>
 <body>
-<h1>🎺 Set Builder</h1>
+<h1>🎺 POW Set Downloader</h1>
 
 <div class="card">
+<h3>1. Select Set Folder</h3>
 <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
-<option value="">Select set</option>
+<option value="">-- Choose --</option>
 {% for folder in folders %}
 <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
 {% endfor %}
@@ -97,38 +94,29 @@ body{font-family:sans-serif;max-width:500px;margin:auto;padding:20px;background:
 </div>
 
 <div class="card">
-<h3>Library</h3>
+<h3>2. Library</h3>
 <div id="library-container"></div>
 </div>
 
 <div class="card">
-<h3>Setlist</h3>
+<h3>3. Setlist</h3>
 <div id="setlist-inner">{{ setlist_html|safe }}</div>
+<button hx-post="/clear" hx-target="#setlist-inner">Clear</button>
 </div>
 
 <form method="POST" action="/build">
 <input type="hidden" id="active_folder" name="active_folder">
-<input name="set_name" required placeholder="Set name">
+<input name="set_name" placeholder="Set name" required>
 <button class="build-btn">BUILD</button>
 </form>
 
-<div class="card">
-<strong>Status:</strong> <span id="status">Ready</span>
-<div id="progress"></div>
-</div>
-
 <script>
-setInterval(()=>{
-fetch('/progress').then(r=>r.json()).then(d=>{
-if(!d) return;
-let el=document.getElementById('status');
-let p=document.getElementById('progress');
-el.innerText=d.message;
-p.innerText=d.current + '/' + d.total;
+document.body.addEventListener('htmx:afterRequest', function(evt){
+    if(evt.detail.target.id==='library-container'){
+        document.getElementById('active_folder').value=document.querySelector('select').value;
+    }
 });
-},500);
 </script>
-
 </body>
 </html>
 '''
@@ -138,8 +126,8 @@ p.innerText=d.current + '/' + d.total;
 def index():
     session.setdefault('setlist', [])
     dbx = get_dbx()
-    folders = []
 
+    folders = []
     if dbx:
         try:
             res = dbx.files_list_folder("")
@@ -148,12 +136,6 @@ def index():
             pass
 
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
-
-
-@app.route('/progress')
-def progress():
-    sid = session.get('sid')
-    return jsonify(BUILD_PROGRESS.get(sid, {"message":"Idle","current":0,"total":0}))
 
 
 @app.route('/update-library', methods=['POST'])
@@ -177,11 +159,12 @@ def update_library():
                 sub = dbx.files_list_folder(entry.path_lower)
                 for file in sub.entries:
                     if isinstance(file, dropbox.files.FileMetadata) and file.name.lower().endswith('.pdf'):
-                        if file.name.lower() in seen:
+                        key = file.name.lower()
+                        if key in seen:
                             continue
-                        seen.add(file.name.lower())
+                        seen.add(key)
                         safe = html.escape(file.name, quote=True)
-                        html_out += f'<div>{safe}<button hx-post="/add" hx-vals="{{\"song\":\"{safe}\"}}" hx-target="#setlist-inner">+</button></div>'
+                        html_out += f'<div class="item"><span>{safe}</span><button hx-post="/add" data-song="{safe}" hx-vals="js:{song: this.getAttribute(\"data-song\")}" hx-target="#setlist-inner">+</button></div>'
 
         LIB_CACHE[path] = html_out
         return html_out
@@ -193,7 +176,7 @@ def update_library():
 def add_song():
     song = request.form.get('song')
     lst = session.get('setlist', [])
-    if song and song not in lst:
+    if song and song not in lst and len(lst) < 50:
         lst.append(song)
     session['setlist'] = lst
     return render_setlist_html(lst)
@@ -224,21 +207,21 @@ def move():
     return render_setlist_html(lst)
 
 
+@app.route('/clear', methods=['POST'])
+def clear():
+    session['setlist'] = []
+    return render_setlist_html([])
+
+
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
     setlist = session.get('setlist', [])
     set_name = request.form.get('set_name')
     active_folder = request.form.get('active_folder')
-    sid = session.get('sid')
 
     if not dbx or not setlist or not active_folder:
         return "Error"
-
-    res = dbx.files_list_folder(active_folder)
-    folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
-
-    BUILD_PROGRESS[sid] = {"message":"Starting","current":0,"total":len(folders)}
 
     try:
         try:
@@ -246,8 +229,11 @@ def build():
         except:
             pass
 
-        for idx, f in enumerate(folders):
-            BUILD_PROGRESS[sid] = {"message":f"Processing {f.name}","current":idx+1,"total":len(folders)}
+        res = dbx.files_list_folder(active_folder)
+
+        for f in res.entries:
+            if not isinstance(f, dropbox.files.FolderMetadata):
+                continue
 
             writer = PdfWriter()
             items = dbx.files_list_folder(f.path_lower).entries
@@ -267,13 +253,10 @@ def build():
 
             dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}-{set_name}.pdf", mode=dropbox.files.WriteMode.overwrite)
 
-        BUILD_PROGRESS[sid] = {"message":"Done","current":len(folders),"total":len(folders)}
         session['setlist'] = []
-
         return "<h1>Done</h1><a href='/'>Back</a>"
 
     except Exception as e:
-        BUILD_PROGRESS[sid] = {"message":f"Error {e}","current":0,"total":0}
         return str(e)
 
 
