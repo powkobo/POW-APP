@@ -81,9 +81,9 @@ body{font-family:sans-serif;max-width:600px;margin:auto;padding:20px;background:
 input[type=text]{width:100%;padding:10px;margin-bottom:10px;border:1px solid #ccc;border-radius:5px}
 </style>
 <script>
-function filterList(inputId, className){
+function filterList(inputId, cls){
   let q=document.getElementById(inputId).value.toLowerCase();
-  document.querySelectorAll('.'+className).forEach(e=>{
+  document.querySelectorAll('.'+cls).forEach(e=>{
     e.style.display = e.innerText.toLowerCase().includes(q)?'flex':'none';
   });
 }
@@ -105,9 +105,6 @@ function filterList(inputId, className){
 <div class="card">
 <h3>2. Regimental Marches</h3>
 <input id="regSearch" onkeyup="filterList('regSearch','reg-item')" placeholder="Search marches">
-<select hx-post="/update-regimental" hx-trigger="change" hx-target="#regimental-container">
-<option value="load">Load Regimental Marches</option>
-</select>
 <div id="regimental-container"></div>
 </div>
 
@@ -181,10 +178,18 @@ def update_library():
                 for f in sub.entries:
                     if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith('.pdf'):
                         k = f.name.lower()
-                        if k in seen: continue
+                        if k in seen:
+                            continue
                         seen.add(k)
                         safe = html.escape(f.name, quote=True)
-                        out += f'<div class="lib-item" style="display:flex;justify-content:space-between;padding:5px;">{safe}<button hx-post="/add" hx-vals="{{\"song\":\"{safe}\"}}" hx-target="#setlist-inner">+</button></div>'
+                        out += f'''
+                        <div class="lib-item" style="display:flex;justify-content:space-between;padding:5px;">
+                            <span>{safe}</span>
+                            <button hx-post="/add" 
+                                    hx-vals='js:{song:this.dataset.song}'
+                                    data-song="{safe}"
+                                    hx-target="#setlist-inner">+</button>
+                        </div>'''
 
         LIB_CACHE[path] = out
         return out
@@ -210,10 +215,18 @@ def update_regimental():
         for f in res.entries:
             if isinstance(f, dropbox.files.FileMetadata) and f.name.lower().endswith('.pdf'):
                 k = f.name.lower()
-                if k in seen: continue
+                if k in seen:
+                    continue
                 seen.add(k)
                 safe = html.escape(f.name, quote=True)
-                out += f'<div class="reg-item" style="display:flex;justify-content:space-between;padding:5px;">{safe}<button hx-post="/add" hx-vals="{{\"song\":\"{safe}\"}}" hx-target="#setlist-inner">+</button></div>'
+                out += f'''
+                <div class="reg-item" style="display:flex;justify-content:space-between;padding:5px;">
+                    <span>{safe}</span>
+                    <button hx-post="/add" 
+                            hx-vals='js:{song:this.dataset.song}'
+                            data-song="{safe}"
+                            hx-target="#setlist-inner">+</button>
+                </div>'''
 
         REG_CACHE[path] = out
         return out
@@ -247,12 +260,12 @@ def move():
     d = request.form.get('dir')
     lst = session.get('setlist', [])
 
-    if d=='up' and i>0:
-        lst[i],lst[i-1]=lst[i-1],lst[i]
-    if d=='down' and i<len(lst)-1:
-        lst[i],lst[i+1]=lst[i+1],lst[i]
+    if d == 'up' and i > 0:
+        lst[i], lst[i-1] = lst[i-1], lst[i]
+    if d == 'down' and i < len(lst)-1:
+        lst[i], lst[i+1] = lst[i+1], lst[i]
 
-    session['setlist']=lst
+    session['setlist'] = lst
     return render_setlist_html(lst)
 
 
@@ -262,7 +275,6 @@ def build():
     setlist = session.get('setlist', [])
     set_name = request.form.get('set_name')
     active_folder = request.form.get('active_folder')
-    use_mm = request.form.get('music_makers')
 
     if not dbx or not setlist or not active_folder:
         return "Error"
@@ -272,14 +284,6 @@ def build():
             dbx.files_create_folder_v2(f"/Generated/{set_name}")
         except:
             pass
-
-        mm_bytes = None
-        if use_mm:
-            try:
-                _, mm = dbx.files_download("/Music Makers.pdf")
-                mm_bytes = mm.content
-            except:
-                mm_bytes = None
 
         res = dbx.files_list_folder(active_folder)
 
@@ -295,9 +299,6 @@ def build():
                 if song.lower() in pdf_map:
                     _, r = dbx.files_download(pdf_map[song.lower()])
                     writer.append(io.BytesIO(r.content))
-
-            if mm_bytes:
-                writer.append(io.BytesIO(mm_bytes))
 
             out = io.BytesIO()
             writer.write(out)
