@@ -5,10 +5,9 @@ from pypdf import PdfWriter
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
 
-# --- ENV VARS ---
 APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-APP_PASSWORD = os.environ.get("APP_PASSWORD")  # simple auth
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 
 def get_dbx():
@@ -24,7 +23,7 @@ def get_dbx():
     except:
         return None
 
-# --- SIMPLE AUTH ---
+
 @app.before_request
 def require_login():
     if not APP_PASSWORD:
@@ -55,11 +54,12 @@ def render_setlist_html(setlist):
     for i, song in enumerate(setlist):
         safe_song = html.escape(song)
         html_out += f'''
-        <div class="item">
+        <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee; align-items:center;">
             <span>{i+1}. {safe_song}</span>
-            <button hx-post="/remove" hx-vals='{{"song": "{safe_song}"}}' hx-target="#setlist-inner">×</button>
+            <button style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;" 
+                    hx-post="/remove" hx-vals='{{"song": "{safe_song}"}}' hx-target="#setlist-inner">×</button>
         </div>'''
-    return html_out or '<p>No songs selected.</p>'
+    return html_out if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
 
 
 HTML_TEMPLATE = '''
@@ -68,28 +68,67 @@ HTML_TEMPLATE = '''
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
+        .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
+        .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
+        .btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+        .build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
+        select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
+        #status-box { font-size: 11px; background: #333; color: #0f0; padding: 10px; border-radius: 5px; min-height: 40px; margin-top: 20px; }
+    </style>
 </head>
 <body>
-<h2>Set Builder</h2>
+    <h1>🎺 POW Set Downloader</h1>
+    
+    <div class="card">
+        <h3>1. Select Set Folder</h3>
+        <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
+            <option value="">-- Choose a Set --</option>
+            {% for folder in folders %}
+            <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
 
-<select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library"></select>
+    <div class="card">
+        <h3>2. Library (Click +)</h3>
+        <div id="library-container" style="max-height: 300px; overflow-y: auto;">
+            <p style="color:#999;">Select a Set above.</p>
+        </div>
+    </div>
 
-<div id="library"></div>
-<div id="setlist-inner">{{ setlist_html|safe }}</div>
+    <div class="card">
+        <h3>3. Your Setlist</h3>
+        <div id="setlist-inner">{{ setlist_html|safe }}</div>
+        <button style="width:100%; margin-top:10px; padding:8px; background:#6c757d; color:white; border:none; border-radius:4px; cursor:pointer;" 
+                hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
+    </div>
 
-<form action="/build" method="POST">
-    <input type="hidden" id="active_folder" name="active_folder">
-    <input name="set_name" required>
-    <button>BUILD</button>
-</form>
+    <form action="/build" method="POST">
+        <input type="hidden" id="active_folder" name="active_folder" value="">
+        <input type="text" name="set_name" placeholder="Output Folder Name" required>
+        <button class="build-btn" type="submit">BUILD 19 INSTRUMENT PARTS</button>
+    </form>
 
-<script>
-document.body.addEventListener('htmx:afterRequest', function(evt) {
-    if (evt.detail.target.id === 'library') {
-        document.getElementById('active_folder').value = document.querySelector('select').value;
-    }
-});
-</script>
+    <div id="status-box">
+        <strong>Status:</strong> <span id="status-text">Ready</span>
+    </div>
+
+    <script>
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.target.id === 'library-container') {
+                var folder = document.querySelector('select[name="folder_path"]').value;
+                document.getElementById('active_folder').value = folder;
+                document.getElementById('status-text').innerHTML = "Loaded Library: " + folder;
+            }
+        });
+
+        document.querySelector('form').addEventListener('submit', function() {
+            var folder = document.querySelector('select[name="folder_path"]').value;
+            document.getElementById('active_folder').value = folder;
+        });
+    </script>
 </body>
 </html>
 '''
@@ -101,17 +140,21 @@ def index():
     dbx = get_dbx()
 
     folders = []
+    status_msg = "Connecting..."
+
     if dbx:
         try:
             res = dbx.files_list_folder("")
-            folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-        except:
-            pass
+            folders = sorted([e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)], key=lambda x: x.name)
+            status_msg = f"Connected: {len(folders)} folders"
+        except Exception as e:
+            status_msg = str(e)
 
     return render_template_string(
         HTML_TEMPLATE,
         folders=folders,
-        setlist_html=render_setlist_html(session['setlist'])
+        setlist_html=render_setlist_html(session['setlist']),
+        status_msg=status_msg
     )
 
 
@@ -130,11 +173,11 @@ def update_library():
         for entry in res.entries:
             if isinstance(entry, dropbox.files.FileMetadata) and entry.name.lower().endswith('.pdf'):
                 safe = html.escape(entry.name)
-                html_out += f'<div>{safe} <button hx-post="/add" hx-vals=\'{{"song":"{safe}"}}\' hx-target="#setlist-inner">+</button></div>'
+                html_out += f'''<div class="item"><span>{safe}</span><button class="btn-add" hx-post="/add" hx-vals='{{"song": "{safe}"}}' hx-target="#setlist-inner">+</button></div>'''
 
-        return html_out or "No PDFs found"
+        return html_out or "<p style='padding:10px;'>No PDFs found.</p>"
     except Exception as e:
-        return str(e)
+        return f"<p style='color:red;padding:10px;'>Error: {e}</p>"
 
 
 @app.route('/add', methods=['POST'])
@@ -143,7 +186,7 @@ def add_song():
     lst = session.get('setlist', [])
 
     if song and song not in lst:
-        if len(lst) < 50:  # prevent session overflow
+        if len(lst) < 50:
             lst.append(song)
     session['setlist'] = lst
 
@@ -162,6 +205,12 @@ def remove_song():
     return render_setlist_html(lst)
 
 
+@app.route('/clear', methods=['POST'])
+def clear():
+    session['setlist'] = []
+    return render_setlist_html([])
+
+
 @app.route('/build', methods=['POST'])
 def build():
     dbx = get_dbx()
@@ -170,10 +219,9 @@ def build():
     active_folder = request.form.get('active_folder')
 
     if not setlist or not dbx or not active_folder:
-        return "Error"
+        return "Error: missing data"
 
     try:
-        # ensure folder exists
         try:
             dbx.files_create_folder_v2(f"/Generated/{set_name}")
         except:
@@ -186,7 +234,6 @@ def build():
                 continue
 
             writer = PdfWriter()
-
             items = dbx.files_list_folder(f.path_lower).entries
             pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
 
@@ -202,14 +249,10 @@ def build():
             writer.write(out)
             out.seek(0)
 
-            dbx.files_upload(
-                out.read(),
-                f"/Generated/{set_name}/{f.name}.pdf",
-                mode=dropbox.files.WriteMode.overwrite
-            )
+            dbx.files_upload(out.read(), f"/Generated/{set_name}/{f.name}.pdf", mode=dropbox.files.WriteMode.overwrite)
 
         session['setlist'] = []
-        return "Done"
+        return f"<h1>Success</h1><a href='/'>Back</a>"
 
     except Exception as e:
         return str(e)
