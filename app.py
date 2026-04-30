@@ -40,11 +40,21 @@ body {
     border:1px solid rgba(255,215,0,0.2);
     padding:30px;
     border-radius:20px;
-    width:320px;
+    width:340px;
     backdrop-filter: blur(10px);
+    text-align:center;
 }
-img { width:100px; display:block; margin:auto; }
-h2 { text-align:center; margin-bottom:20px; }
+.logo {
+    width:120px;
+    margin:auto;
+    display:block;
+    margin-bottom:15px;
+    filter:drop-shadow(0 0 12px gold);
+}
+.title {
+    font-size:22px;
+    margin-bottom:20px;
+}
 input {
     width:100%;
     padding:12px;
@@ -62,15 +72,16 @@ button {
     border-radius:8px;
     background:linear-gradient(90deg,#d4af37,#f5d76e);
     font-weight:bold;
+    cursor:pointer;
 }
 </style>
 </head>
 <body>
 <div class="card">
-<img src="/static/logo.png">
-<h2>PoW Band PDF Portal</h2>
+<img src="/static/logo.png" class="logo">
+<div class="title">PoW Band PDF Portal</div>
 <form method="POST">
-<input type="password" name="password" placeholder="Password">
+<input type="password" name="password" placeholder="Enter password" required>
 <button>Sign In</button>
 </form>
 </div>
