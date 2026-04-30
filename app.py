@@ -1,27 +1,16 @@
-import os, io, threading, dropbox, html, json
-from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify
-from pypdf import PdfWriter
+import os, io, threading, dropbox, html, json from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify from pypdf import PdfWriter
 
-app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
+app = Flask(name) app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
 
-APP_KEY = os.environ.get("DROPBOX_APP_KEY")
-APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
+APP_KEY = os.environ.get("DROPBOX_APP_KEY") APP_SECRET = os.environ.get("DROPBOX_APP_SECRET") APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
-
-def get_dbx():
-    refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN")
-    if not refresh_token or not APP_KEY or not APP_SECRET:
-        return None
-    return dropbox.Dropbox(oauth2_refresh_token=refresh_token, app_key=APP_KEY, app_secret=APP_SECRET)
-
+def get_dbx(): refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN") if not refresh_token or not APP_KEY or not APP_SECRET: return None return dropbox.Dropbox(oauth2_refresh_token=refresh_token, app_key=APP_KEY, app_secret=APP_SECRET)
 
 HTML_LOGIN = '''
-<!DOCTYPE html>
-<html>
+
+<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -87,36 +76,23 @@ button {
 </div>
 </body>
 </html>
-'''
+'''@app.before_request def protect(): if request.path.startswith('/static'): return
 
+if request.path in ['/login', '/status', '/build']:
+    return
 
-@app.before_request
-def protect():
-    if request.endpoint in ['login', 'static', 'status']:
-        return
-    if not session.get("auth"):
-        return redirect(url_for("login"))
+if not session.get("auth"):
+    return redirect('/login')
 
+@app.route('/login', methods=['GET', 'POST']) def login(): if request.method == 'POST': if request.form.get('password') == APP_PASSWORD: session['auth'] = True return redirect('/') return render_template_string(HTML_LOGIN)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        if request.form.get('password') == APP_PASSWORD:
-            session['auth'] = True
-            return redirect('/')
-    return render_template_string(HTML_LOGIN)
+def render_setlist_html(setlist): out = "" for i, s in enumerate(setlist): name = html.escape(s.get("name", "")) payload = json.dumps(s)
 
+up = json.dumps({"index": i, "dir": "up"})
+    down = json.dumps({"index": i, "dir": "down"})
 
-def render_setlist_html(setlist):
-    out = ""
-    for i, s in enumerate(setlist):
-        name = html.escape(s.get("name", ""))
-        payload = json.dumps(s)
+    out += f'''
 
-        up = json.dumps({"index": i, "dir": "up"})
-        down = json.dumps({"index": i, "dir": "down"})
-
-        out += f'''
 <div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border-bottom:1px solid #333;color:white;">
 <span>{i+1}. {name}</span>
 <div>
@@ -126,12 +102,9 @@ def render_setlist_html(setlist):
 </div>
 </div>
 '''
-    return out or "<p style='color:#888'>No songs selected</p>"
+    return out or "<p style='color:#888'>No songs selected</p>"HTML_TEMPLATE = '''
 
-
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
+<!DOCTYPE html><html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -158,36 +131,22 @@ body {
 input, select { width:100%; padding:10px; margin-bottom:10px; border-radius:5px; border:1px solid #333; background:#111; color:white; }
 </style>
 </head>
-<body>
-
-<h1 style="text-align:center;">🎺 PoW Band PDF Portal</h1>
-
-<div class="card">
+<body><h1 style="text-align:center;">🎺 PoW Band PDF Portal</h1><div class="card">
 <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
 <option value="">-- Choose Set --</option>
 {% for folder in folders %}
 <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
 {% endfor %}
 </select>
-</div>
-
-<div class="card">
+</div><div class="card">
 <input id="libSearch" placeholder="Search songs..." onkeyup="filterLib()">
 <div id="library-container"></div>
-</div>
-
-<div class="card">
+</div><div class="card">
 <div id="setlist-inner">{{ setlist_html|safe }}</div>
-</div>
-
-<form action="/build" method="POST">
+</div><form action="/build" method="POST">
 <input name="set_name" placeholder="Set Name">
 <button class="build-btn">BUILD</button>
-</form>
-
-<div id="status-box"><span id="status-text"></span></div>
-
-<script>
+</form><div id="status-box"><span id="status-text"></span></div><script>
 function filterLib(){
  let q=document.getElementById('libSearch').value.toLowerCase();
  document.querySelectorAll('.lib-item').forEach(e=>{
@@ -200,95 +159,48 @@ setInterval(()=>{
   document.getElementById('status-text').innerText=d.text+' '+d.progress+'%';
  });
 },1000);
-</script>
-
-</body>
+</script></body>
 </html>
-'''
+'''@app.route('/') def index(): session.setdefault('setlist', []) dbx = get_dbx() folders = [] if dbx: res = dbx.files_list_folder("") folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)] return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
+@app.route('/move', methods=['POST']) def move(): idx = int(request.form.get('index')) direction = request.form.get('dir') lst = session.get('setlist', [])
 
-@app.route('/')
-def index():
-    session.setdefault('setlist', [])
-    dbx = get_dbx()
-    folders = []
-    if dbx:
-        res = dbx.files_list_folder("")
-        folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
+if direction == 'up' and idx > 0:
+    lst[idx], lst[idx-1] = lst[idx-1], lst[idx]
+elif direction == 'down' and idx < len(lst)-1:
+    lst[idx], lst[idx+1] = lst[idx+1], lst[idx]
 
+session['setlist'] = lst
+return render_setlist_html(lst)
 
-@app.route('/move', methods=['POST'])
-def move():
-    idx = int(request.form.get('index'))
-    direction = request.form.get('dir')
-    lst = session.get('setlist', [])
+@app.route('/update-library', methods=['POST']) def update_library(): dbx = get_dbx() path = request.form.get('folder_path') if not dbx or not path: return ""
 
-    if direction == 'up' and idx > 0:
-        lst[idx], lst[idx-1] = lst[idx-1], lst[idx]
-    elif direction == 'down' and idx < len(lst)-1:
-        lst[idx], lst[idx+1] = lst[idx+1], lst[idx]
+res = dbx.files_list_folder(path)
+out = ""
+seen = set()
 
-    session['setlist'] = lst
-    return render_setlist_html(lst)
+for e in res.entries:
+    if isinstance(e, dropbox.files.FolderMetadata):
+        sub = dbx.files_list_folder(e.path_lower)
+        for f in sub.entries:
+            if f.name.lower().endswith('.pdf'):
+                key = f.name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
 
+                payload = json.dumps({"name": f.name, "path": f.path_lower})
 
-@app.route('/update-library', methods=['POST'])
-def update_library():
-    dbx = get_dbx()
-    path = request.form.get('folder_path')
-    if not dbx or not path:
-        return ""
+                out += f'''<div class="lib-item item">
 
-    res = dbx.files_list_folder(path)
-    out = ""
-    seen = set()
+<span>{html.escape(f.name)}</span> <button class="btn-add" hx-post="/add" hx-vals='{payload}' hx-target="#setlist-inner">+</button>
 
-    for e in res.entries:
-        if isinstance(e, dropbox.files.FolderMetadata):
-            sub = dbx.files_list_folder(e.path_lower)
-            for f in sub.entries:
-                if f.name.lower().endswith('.pdf'):
-                    key = f.name.lower()
-                    if key in seen:
-                        continue
-                    seen.add(key)
+</div>'''return out
 
-                    payload = json.dumps({"name": f.name, "path": f.path_lower})
+@app.route('/add', methods=['POST']) def add(): name = request.form.get('name') path = request.form.get('path') lst = session.get('setlist', []) if name and path: lst.append({"name": name, "path": path}) session['setlist'] = lst return render_setlist_html(lst)
 
-                    out += f'''<div class="lib-item item">
-<span>{html.escape(f.name)}</span>
-<button class="btn-add" hx-post="/add" hx-vals='{payload}' hx-target="#setlist-inner">+</button>
-</div>'''
+@app.route('/remove', methods=['POST']) def remove(): name = request.form.get('name') path = request.form.get('path') lst = session.get('setlist', []) lst = [s for s in lst if not (s.get('name') == name and s.get('path') == path)] session['setlist'] = lst return render_setlist_html(lst)
 
-    return out
+@app.route('/status') def status(): return jsonify(BUILD_STATUS)
 
-
-@app.route('/add', methods=['POST'])
-def add():
-    name = request.form.get('name')
-    path = request.form.get('path')
-    lst = session.get('setlist', [])
-    if name and path:
-        lst.append({"name": name, "path": path})
-    session['setlist'] = lst
-    return render_setlist_html(lst)
-
-
-@app.route('/remove', methods=['POST'])
-def remove():
-    name = request.form.get('name')
-    path = request.form.get('path')
-    lst = session.get('setlist', [])
-    lst = [s for s in lst if not (s.get('name') == name and s.get('path') == path)]
-    session['setlist'] = lst
-    return render_setlist_html(lst)
-
-
-@app.route('/status')
-def status():
-    return jsonify(BUILD_STATUS)
-
-
-if __name__ == '__main__':
-    app.run()
+if name == 'main': app.run()
