@@ -7,6 +7,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
 
 APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
@@ -16,6 +17,50 @@ def get_dbx():
     if not refresh_token or not APP_KEY or not APP_SECRET:
         return None
     return dropbox.Dropbox(oauth2_refresh_token=refresh_token, app_key=APP_KEY, app_secret=APP_SECRET)
+
+
+HTML_LOGIN = '''
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {display:flex;justify-content:center;align-items:center;height:100vh;background:#0f172a;color:white;font-family:sans-serif}
+.card {background:rgba(255,255,255,0.05);padding:30px;border-radius:15px;text-align:center}
+input {width:100%;padding:10px;margin-top:10px;border-radius:6px;border:none}
+button {width:100%;padding:10px;margin-top:10px;background:gold;border:none;border-radius:6px}
+</style>
+</head>
+<body>
+<div class="card">
+<h2>PoW Band PDF Portal</h2>
+<form method="POST">
+<input type="password" name="password" placeholder="Password">
+<button>Login</button>
+</form>
+</div>
+</body>
+</html>
+'''
+
+
+@app.before_request
+def protect():
+    if not APP_PASSWORD:
+        return
+    if request.endpoint in ['login', 'static', 'status']:
+        return
+    if not session.get("auth"):
+        return redirect(url_for("login"))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        if request.form.get('password') == APP_PASSWORD:
+            session['auth'] = True
+            return redirect('/')
+    return render_template_string(HTML_LOGIN)
 
 
 def render_setlist_html(setlist):
@@ -115,45 +160,38 @@ def index():
 def update_library():
     dbx = get_dbx()
     path = request.form.get('folder_path')
-
     if not dbx or not path:
         return ""
 
-    try:
-        res = dbx.files_list_folder(path)
-        out = ""
-        seen = set()
+    res = dbx.files_list_folder(path)
+    out = ""
+    seen = set()
 
-        for e in res.entries:
-            if isinstance(e, dropbox.files.FolderMetadata):
-                sub = dbx.files_list_folder(e.path_lower)
+    for e in res.entries:
+        if isinstance(e, dropbox.files.FolderMetadata):
+            sub = dbx.files_list_folder(e.path_lower)
+            for f in sub.entries:
+                if f.name.lower().endswith('.pdf'):
+                    key = f.name.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
 
-                for f in sub.entries:
-                    if f.name.lower().endswith('.pdf'):
-                        key = f.name.lower()
-                        if key in seen:
-                            continue
-                        seen.add(key)
+                    safe = html.escape(f.name)
+                    payload = json.dumps({"name": f.name, "path": f.path_lower})
 
-                        safe = html.escape(f.name)
-                        payload = json.dumps({"name": f.name, "path": f.path_lower})
-
-                        out += f'''<div class="lib-item item">
+                    out += f'''<div class="lib-item item">
 <span>{safe}</span>
 <button class="btn-add" hx-post="/add" hx-vals='{payload}' hx-target="#setlist-inner">+</button>
 </div>'''
 
-        return out
-
-    except Exception as e:
-        return str(e)
+    return out
 
 
 @app.route('/add', methods=['POST'])
 def add():
     name = request.form.get('name')
     path = request.form.get('path')
-
     lst = session.get('setlist', [])
 
     if name and path:
@@ -167,10 +205,8 @@ def add():
 def remove():
     name = request.form.get('name')
     path = request.form.get('path')
-
     lst = session.get('setlist', [])
     lst = [s for s in lst if not (s.get('name') == name and s.get('path') == path)]
-
     session['setlist'] = lst
     return render_setlist_html(lst)
 
@@ -188,34 +224,22 @@ def build_worker(setlist, set_name):
 
     BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
 
-    try:
-        first_path = setlist[0].get("path")
-        root = "/" + first_path.split("/")[1]
-    except:
-        BUILD_STATUS.update({"running": False, "text": "Path error"})
-        return
+    first_path = setlist[0].get("path")
+    root = "/" + first_path.split("/")[1]
 
-    try:
-        res = dbx.files_list_folder(root)
-        folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
-    except:
-        BUILD_STATUS.update({"running": False, "text": "Folder error"})
-        return
+    res = dbx.files_list_folder(root)
+    folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
 
     total = len(folders)
 
     for i, folder in enumerate(folders):
         writer = PdfWriter()
 
-        try:
-            items = dbx.files_list_folder(folder.path_lower).entries
-            pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
-        except:
-            continue
+        items = dbx.files_list_folder(folder.path_lower).entries
+        pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
 
         for song in setlist:
             name = (song.get("name") or "").lower()
-
             if name in pdf_map:
                 try:
                     _, r = dbx.files_download(pdf_map[name])
@@ -230,19 +254,13 @@ def build_worker(setlist, set_name):
         writer.write(out)
         out.seek(0)
 
-        try:
-            dbx.files_upload(
-                out.read(),
-                f"/Generated/{set_name}/{folder.name}-{set_name}.pdf",
-                mode=dropbox.files.WriteMode.overwrite
-            )
-        except:
-            continue
+        dbx.files_upload(
+            out.read(),
+            f"/Generated/{set_name}/{folder.name}-{set_name}.pdf",
+            mode=dropbox.files.WriteMode.overwrite
+        )
 
-        BUILD_STATUS.update({
-            "progress": int((i + 1) / total * 100),
-            "text": folder.name
-        })
+        BUILD_STATUS.update({"progress": int((i + 1) / total * 100), "text": folder.name})
 
     BUILD_STATUS.update({"running": False, "text": "Done"})
 
@@ -252,11 +270,7 @@ def build():
     if BUILD_STATUS["running"]:
         return "Busy"
 
-    threading.Thread(
-        target=build_worker,
-        args=(session.get('setlist', []), request.form.get('set_name'))
-    ).start()
-
+    threading.Thread(target=build_worker, args=(session.get('setlist', []), request.form.get('set_name'))).start()
     return redirect('/')
 
 
