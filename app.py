@@ -23,8 +23,8 @@ def render_setlist_html(setlist):
     for i, s in enumerate(setlist):
         name = html.escape(s.get("name", ""))
         payload = json.dumps(s)
-        out += f"<div style='display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;'>\
-        <span>{i+1}. {name}</span>\
+        out += f"<div style='display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;'>\\
+        <span>{i+1}. {name}</span>\\
         <button hx-post='/remove' hx-vals='{payload}' hx-target='#setlist-inner'>×</button></div>"
     return out or "<p style='color:#999'>No songs selected</p>"
 
@@ -139,7 +139,7 @@ def update_library():
                         safe = html.escape(f.name)
                         payload = json.dumps({"name": f.name, "path": f.path_lower})
 
-                        out += f"<div class='lib-item item'><span>{safe}</span>\
+                        out += f"<div class='lib-item item'><span>{safe}</span>\\
                         <button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
 
         return out
@@ -181,37 +181,51 @@ def build_worker(setlist, set_name):
         BUILD_STATUS.update({"running": False, "text": "Dropbox error"})
         return
 
-    BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
-
-    instrument_map = {}
-
-    for song in setlist:
-        path = song.get("path")
-        if not path:
-            continue
-
-        parts = path.split('/')
-        if len(parts) < 3:
-            continue
-
-        instrument = parts[-2]
-        instrument_map.setdefault(instrument, []).append(path)
-
-    if not instrument_map:
-        BUILD_STATUS.update({"running": False, "text": "No valid files"})
+    if not setlist:
+        BUILD_STATUS.update({"running": False, "text": "Empty setlist"})
         return
 
-    total = len(instrument_map)
+    BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
 
-    for i, (instrument, paths) in enumerate(instrument_map.items()):
+    # determine root from first song path
+    try:
+        first_path = setlist[0].get("path")
+        root = "/" + first_path.split("/")[1]
+    except Exception:
+        BUILD_STATUS.update({"running": False, "text": "Path error"})
+        return
+
+    try:
+        res = dbx.files_list_folder(root)
+        folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
+    except Exception:
+        BUILD_STATUS.update({"running": False, "text": "Folder error"})
+        return
+
+    if not folders:
+        BUILD_STATUS.update({"running": False, "text": "No instrument folders"})
+        return
+
+    total = len(folders)
+
+    for i, folder in enumerate(folders):
         writer = PdfWriter()
 
-        for p in paths:
-            try:
-                _, r = dbx.files_download(p)
-                writer.append(io.BytesIO(r.content))
-            except:
-                continue
+        try:
+            items = dbx.files_list_folder(folder.path_lower).entries
+            pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
+        except Exception:
+            continue
+
+        for song in setlist:
+            name = (song.get("name") or "").lower()
+
+            if name in pdf_map:
+                try:
+                    _, r = dbx.files_download(pdf_map[name])
+                    writer.append(io.BytesIO(r.content))
+                except Exception:
+                    continue
 
         if not writer.pages:
             continue
@@ -223,15 +237,15 @@ def build_worker(setlist, set_name):
         try:
             dbx.files_upload(
                 out.read(),
-                f"/Generated/{set_name}/{instrument}-{set_name}.pdf",
+                f"/Generated/{set_name}/{folder.name}-{set_name}.pdf",
                 mode=dropbox.files.WriteMode.overwrite
             )
-        except:
+        except Exception:
             continue
 
         BUILD_STATUS.update({
             "progress": int((i + 1) / total * 100),
-            "text": instrument
+            "text": folder.name
         })
 
     BUILD_STATUS.update({"running": False, "text": "Done"})
