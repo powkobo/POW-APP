@@ -25,18 +25,53 @@ HTML_LOGIN = '''
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body {display:flex;justify-content:center;align-items:center;height:100vh;background:#0f172a;color:white;font-family:sans-serif}
-.card {background:rgba(255,255,255,0.05);padding:30px;border-radius:15px;text-align:center}
-input {width:100%;padding:10px;margin-top:10px;border-radius:6px;border:none}
-button {width:100%;padding:10px;margin-top:10px;background:gold;border:none;border-radius:6px}
+body {
+    margin:0;
+    font-family:sans-serif;
+    background:radial-gradient(circle at top, #1a1f2e, #000);
+    color:white;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+}
+.card {
+    background:rgba(255,255,255,0.05);
+    border:1px solid rgba(255,215,0,0.2);
+    padding:30px;
+    border-radius:20px;
+    width:320px;
+    backdrop-filter: blur(10px);
+}
+img { width:100px; display:block; margin:auto; }
+h2 { text-align:center; margin-bottom:20px; }
+input {
+    width:100%;
+    padding:12px;
+    margin-top:10px;
+    border-radius:8px;
+    border:1px solid #333;
+    background:#111;
+    color:white;
+}
+button {
+    width:100%;
+    padding:12px;
+    margin-top:15px;
+    border:none;
+    border-radius:8px;
+    background:linear-gradient(90deg,#d4af37,#f5d76e);
+    font-weight:bold;
+}
 </style>
 </head>
 <body>
 <div class="card">
+<img src="/static/logo.png">
 <h2>PoW Band PDF Portal</h2>
 <form method="POST">
 <input type="password" name="password" placeholder="Password">
-<button>Login</button>
+<button>Sign In</button>
 </form>
 </div>
 </body>
@@ -68,11 +103,21 @@ def render_setlist_html(setlist):
     for i, s in enumerate(setlist):
         name = html.escape(s.get("name", ""))
         payload = json.dumps(s)
-        out += f'''<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
+
+        up = json.dumps({"index": i, "dir": "up"})
+        down = json.dumps({"index": i, "dir": "down"})
+
+        out += f'''
+<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;border-bottom:1px solid #333;color:white;">
 <span>{i+1}. {name}</span>
+<div>
+<button hx-post="/move" hx-vals='{up}' hx-target="#setlist-inner">↑</button>
+<button hx-post="/move" hx-vals='{down}' hx-target="#setlist-inner">↓</button>
 <button hx-post="/remove" hx-vals='{payload}' hx-target="#setlist-inner">×</button>
-</div>'''
-    return out or "<p style='color:#999'>No songs selected</p>"
+</div>
+</div>
+'''
+    return out or "<p style='color:#888'>No songs selected</p>"
 
 
 HTML_TEMPLATE = '''
@@ -82,22 +127,35 @@ HTML_TEMPLATE = '''
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <style>
-body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
-.card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
-.item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
-.btn-add { background: #28a745; color: white; border: none; padding: 6px 10px; border-radius: 4px; }
-.build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
-#status-box { font-size: 12px; background: #222; color: #0f0; padding: 10px; border-radius: 5px; }
+body {
+    font-family:sans-serif;
+    max-width:500px;
+    margin:auto;
+    padding:20px;
+    background:radial-gradient(circle at top, #1a1f2e, #000);
+    color:white;
+}
+.card {
+    background:rgba(255,255,255,0.05);
+    border:1px solid rgba(255,215,0,0.2);
+    padding:15px;
+    border-radius:15px;
+    margin-bottom:20px;
+}
+.item { display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #333; }
+.btn-add { background:#d4af37; border:none; padding:6px 10px; border-radius:5px; }
+.build-btn { width:100%; padding:15px; background:linear-gradient(90deg,#d4af37,#f5d76e); border:none; border-radius:10px; }
+#status-box { background:#111; color:#0f0; padding:10px; border-radius:5px; }
+input, select { width:100%; padding:10px; margin-bottom:10px; border-radius:5px; border:1px solid #333; background:#111; color:white; }
 </style>
 </head>
 <body>
 
-<h1>🎺 POW Set Downloader</h1>
+<h1 style="text-align:center;">🎺 PoW Band PDF Portal</h1>
 
 <div class="card">
-<h3>Select Set Folder</h3>
 <select name="folder_path" hx-post="/update-library" hx-trigger="change" hx-target="#library-container">
-<option value="">-- Choose a Set --</option>
+<option value="">-- Choose Set --</option>
 {% for folder in folders %}
 <option value="{{ folder.path_lower }}">{{ folder.name }}</option>
 {% endfor %}
@@ -105,18 +163,16 @@ body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; b
 </div>
 
 <div class="card">
-<h3>Library</h3>
 <input id="libSearch" placeholder="Search songs..." onkeyup="filterLib()">
 <div id="library-container"></div>
 </div>
 
 <div class="card">
-<h3>Setlist</h3>
 <div id="setlist-inner">{{ setlist_html|safe }}</div>
 </div>
 
 <form action="/build" method="POST">
-<input type="text" name="set_name" placeholder="Set Name" required>
+<input name="set_name" placeholder="Set Name">
 <button class="build-btn">BUILD</button>
 </form>
 
@@ -148,12 +204,24 @@ def index():
     dbx = get_dbx()
     folders = []
     if dbx:
-        try:
-            res = dbx.files_list_folder("")
-            folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
-        except:
-            pass
+        res = dbx.files_list_folder("")
+        folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
+
+
+@app.route('/move', methods=['POST'])
+def move():
+    idx = int(request.form.get('index'))
+    direction = request.form.get('dir')
+    lst = session.get('setlist', [])
+
+    if direction == 'up' and idx > 0:
+        lst[idx], lst[idx-1] = lst[idx-1], lst[idx]
+    elif direction == 'down' and idx < len(lst)-1:
+        lst[idx], lst[idx+1] = lst[idx+1], lst[idx]
+
+    session['setlist'] = lst
+    return render_setlist_html(lst)
 
 
 @app.route('/update-library', methods=['POST'])
@@ -177,11 +245,10 @@ def update_library():
                         continue
                     seen.add(key)
 
-                    safe = html.escape(f.name)
                     payload = json.dumps({"name": f.name, "path": f.path_lower})
 
                     out += f'''<div class="lib-item item">
-<span>{safe}</span>
+<span>{html.escape(f.name)}</span>
 <button class="btn-add" hx-post="/add" hx-vals='{payload}' hx-target="#setlist-inner">+</button>
 </div>'''
 
@@ -193,10 +260,8 @@ def add():
     name = request.form.get('name')
     path = request.form.get('path')
     lst = session.get('setlist', [])
-
     if name and path:
         lst.append({"name": name, "path": path})
-
     session['setlist'] = lst
     return render_setlist_html(lst)
 
@@ -209,69 +274,6 @@ def remove():
     lst = [s for s in lst if not (s.get('name') == name and s.get('path') == path)]
     session['setlist'] = lst
     return render_setlist_html(lst)
-
-
-def build_worker(setlist, set_name):
-    dbx = get_dbx()
-
-    if not dbx:
-        BUILD_STATUS.update({"running": False, "text": "Dropbox error"})
-        return
-
-    if not setlist:
-        BUILD_STATUS.update({"running": False, "text": "Empty setlist"})
-        return
-
-    BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
-
-    first_path = setlist[0].get("path")
-    root = "/" + first_path.split("/")[1]
-
-    res = dbx.files_list_folder(root)
-    folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
-
-    total = len(folders)
-
-    for i, folder in enumerate(folders):
-        writer = PdfWriter()
-
-        items = dbx.files_list_folder(folder.path_lower).entries
-        pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
-
-        for song in setlist:
-            name = (song.get("name") or "").lower()
-            if name in pdf_map:
-                try:
-                    _, r = dbx.files_download(pdf_map[name])
-                    writer.append(io.BytesIO(r.content))
-                except:
-                    continue
-
-        if not writer.pages:
-            continue
-
-        out = io.BytesIO()
-        writer.write(out)
-        out.seek(0)
-
-        dbx.files_upload(
-            out.read(),
-            f"/Generated/{set_name}/{folder.name}-{set_name}.pdf",
-            mode=dropbox.files.WriteMode.overwrite
-        )
-
-        BUILD_STATUS.update({"progress": int((i + 1) / total * 100), "text": folder.name})
-
-    BUILD_STATUS.update({"running": False, "text": "Done"})
-
-
-@app.route('/build', methods=['POST'])
-def build():
-    if BUILD_STATUS["running"]:
-        return "Busy"
-
-    threading.Thread(target=build_worker, args=(session.get('setlist', []), request.form.get('set_name'))).start()
-    return redirect('/')
 
 
 @app.route('/status')
