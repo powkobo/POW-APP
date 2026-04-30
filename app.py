@@ -7,7 +7,6 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
 
 APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
@@ -17,6 +16,15 @@ def get_dbx():
     if not refresh_token or not APP_KEY or not APP_SECRET:
         return None
     return dropbox.Dropbox(oauth2_refresh_token=refresh_token, app_key=APP_KEY, app_secret=APP_SECRET)
+
+
+def render_setlist_html(setlist):
+    out = ""
+    for i, s in enumerate(setlist):
+        name = html.escape(s.get("name", ""))
+        payload = json.dumps(s)
+        out += f"<div>{i+1}. {name}<button hx-post='/remove' hx-vals='{payload}' hx-target='#setlist-inner'>×</button></div>"
+    return out or "<p>No songs selected</p>"
 
 
 HTML_TEMPLATE = '''
@@ -77,110 +85,156 @@ setInterval(()=>{
 '''
 
 
-def render_setlist_html(setlist):
-    out=""
-    for i,s in enumerate(setlist):
-        name=html.escape(s['name'])
-        data=json.dumps(s)
-        out+=f"<div>{i+1}. {name}<button hx-post='/remove' hx-vals='{data}' hx-target='#setlist-inner'>×</button></div>"
-    return out or "<p>No songs selected</p>"
-
-
 @app.route('/')
 def index():
-    session.setdefault('setlist',[])
-    dbx=get_dbx()
-    folders=[]
+    session['setlist'] = []  # clear old broken data once
+    dbx = get_dbx()
+    folders = []
     if dbx:
-        res=dbx.files_list_folder("")
-        folders=[e for e in res.entries if isinstance(e,dropbox.files.FolderMetadata)]
-    return render_template_string(HTML_TEMPLATE,folders=folders,setlist_html=render_setlist_html(session['setlist']))
+        try:
+            res = dbx.files_list_folder("")
+            folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
+        except:
+            pass
+    return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
 
-@app.route('/update-library',methods=['POST'])
+@app.route('/update-library', methods=['POST'])
 def update_library():
-    dbx=get_dbx()
-    path=request.form.get('folder_path')
-    if not dbx or not path: return ""
-    res=dbx.files_list_folder(path)
-    out=""
-    for e in res.entries:
-        if isinstance(e,dropbox.files.FolderMetadata):
-            sub=dbx.files_list_folder(e.path_lower)
-            for f in sub.entries:
-                if f.name.lower().endswith('.pdf'):
-                    safe=html.escape(f.name)
-                    payload=json.dumps({"name":f.name,"path":f.path_lower})
-                    out+=f"<div class='item'><span>{safe}</span><button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
-    return out
+    dbx = get_dbx()
+    path = request.form.get('folder_path')
+    if not dbx or not path:
+        return ""
+
+    try:
+        res = dbx.files_list_folder(path)
+        out = ""
+
+        for e in res.entries:
+            if isinstance(e, dropbox.files.FolderMetadata):
+                sub = dbx.files_list_folder(e.path_lower)
+                for f in sub.entries:
+                    if f.name.lower().endswith('.pdf'):
+                        safe = html.escape(f.name)
+                        payload = json.dumps({"name": f.name, "path": f.path_lower})
+                        out += f"<div class='item'><span>{safe}</span><button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
+
+        return out
+
+    except Exception as e:
+        return str(e)
 
 
-@app.route('/add',methods=['POST'])
+@app.route('/add', methods=['POST'])
 def add():
-    name=request.form.get('name')
-    path=request.form.get('path')
-    lst=session.get('setlist',[])
+    name = request.form.get('name')
+    path = request.form.get('path')
+
+    lst = session.get('setlist', [])
+
     if name and path:
-        lst.append({"name":name,"path":path})
-    session['setlist']=lst
+        lst.append({"name": name, "path": path})
+
+    session['setlist'] = lst
     return render_setlist_html(lst)
 
 
-@app.route('/remove',methods=['POST'])
+@app.route('/remove', methods=['POST'])
 def remove():
-    name=request.form.get('name')
-    path=request.form.get('path')
-    lst=session.get('setlist',[])
-    lst=[s for s in lst if not (s['name']==name and s['path']==path)]
-    session['setlist']=lst
+    name = request.form.get('name')
+    path = request.form.get('path')
+
+    lst = session.get('setlist', [])
+    lst = [s for s in lst if not (s.get('name') == name and s.get('path') == path)]
+
+    session['setlist'] = lst
     return render_setlist_html(lst)
 
 
-def build_worker(setlist,set_name):
-    dbx=get_dbx()
-    BUILD_STATUS.update({"running":True,"progress":0})
+def build_worker(setlist, set_name):
+    dbx = get_dbx()
 
-    instrument_map={}
+    if not dbx:
+        BUILD_STATUS.update({"running": False, "text": "Dropbox error"})
+        return
+
+    BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
+
+    instrument_map = {}
 
     for song in setlist:
-        parts=song['path'].split('/')
-        if len(parts)>=3:
-            instrument=parts[-2]
-            instrument_map.setdefault(instrument,[]).append(song['path'])
+        try:
+            path = song.get("path")
+            if not path:
+                continue
 
-    total=len(instrument_map)
+            parts = path.split('/')
+            if len(parts) < 3:
+                continue
 
-    for i,(instrument,paths) in enumerate(instrument_map.items()):
-        writer=PdfWriter()
+            instrument = parts[-2]
+            instrument_map.setdefault(instrument, []).append(path)
+
+        except:
+            continue
+
+    if not instrument_map:
+        BUILD_STATUS.update({"running": False, "text": "No valid files"})
+        return
+
+    total = len(instrument_map)
+
+    for i, (instrument, paths) in enumerate(instrument_map.items()):
+        writer = PdfWriter()
+
         for p in paths:
             try:
-                _,r=dbx.files_download(p)
+                _, r = dbx.files_download(p)
                 writer.append(io.BytesIO(r.content))
             except:
                 continue
 
-        if not writer.pages: continue
+        if not writer.pages:
+            continue
 
-        out=io.BytesIO()
+        out = io.BytesIO()
         writer.write(out)
         out.seek(0)
 
-        dbx.files_upload(out.read(),f"/Generated/{set_name}/{instrument}-{set_name}.pdf",mode=dropbox.files.WriteMode.overwrite)
+        try:
+            dbx.files_upload(
+                out.read(),
+                f"/Generated/{set_name}/{instrument}-{set_name}.pdf",
+                mode=dropbox.files.WriteMode.overwrite
+            )
+        except:
+            continue
 
-        BUILD_STATUS.update({"progress":int((i+1)/total*100),"text":instrument})
+        BUILD_STATUS.update({
+            "progress": int((i + 1) / total * 100),
+            "text": instrument
+        })
 
-    BUILD_STATUS.update({"running":False,"text":"Done"})
+    BUILD_STATUS.update({"running": False, "text": "Done"})
 
 
-@app.route('/build',methods=['POST'])
+@app.route('/build', methods=['POST'])
 def build():
-    if BUILD_STATUS["running"]: return "Busy"
-    threading.Thread(target=build_worker,args=(session.get('setlist',[]),request.form.get('set_name'))).start()
+    if BUILD_STATUS["running"]:
+        return "Busy"
+
+    threading.Thread(
+        target=build_worker,
+        args=(session.get('setlist', []), request.form.get('set_name'))
+    ).start()
+
     return redirect('/')
 
 
 @app.route('/status')
-def status(): return jsonify(BUILD_STATUS)
+def status():
+    return jsonify(BUILD_STATUS)
 
 
-if __name__=='__main__': app.run()
+if __name__ == '__main__':
+    app.run()
