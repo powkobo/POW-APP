@@ -23,8 +23,10 @@ def render_setlist_html(setlist):
     for i, s in enumerate(setlist):
         name = html.escape(s.get("name", ""))
         payload = json.dumps(s)
-        out += f"<div>{i+1}. {name}<button hx-post='/remove' hx-vals='{payload}' hx-target='#setlist-inner'>×</button></div>"
-    return out or "<p>No songs selected</p>"
+        out += f"<div style='display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;'>\
+        <span>{i+1}. {name}</span>\
+        <button hx-post='/remove' hx-vals='{payload}' hx-target='#setlist-inner'>×</button></div>"
+    return out or "<p style='color:#999'>No songs selected</p>"
 
 
 HTML_TEMPLATE = '''
@@ -37,13 +39,13 @@ HTML_TEMPLATE = '''
 body { font-family: sans-serif; max-width: 500px; margin: auto; padding: 20px; background: #f4f4f4; }
 .card { border: 1px solid #ddd; padding: 15px; border-radius: 8px; background: white; margin-bottom: 20px; }
 .item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
-.btn-add { background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
-.build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 18px; cursor: pointer; }
-select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; }
-#status-box { font-size: 11px; background: #333; color: #0f0; padding: 10px; border-radius: 5px; min-height: 40px; margin-top: 20px; }
+.btn-add { background: #28a745; color: white; border: none; padding: 6px 10px; border-radius: 4px; }
+.build-btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
+#status-box { font-size: 12px; background: #222; color: #0f0; padding: 10px; border-radius: 5px; }
 </style>
 </head>
 <body>
+
 <h1>🎺 POW Set Downloader</h1>
 
 <div class="card">
@@ -58,6 +60,7 @@ select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 
 
 <div class="card">
 <h3>Library</h3>
+<input id="libSearch" placeholder="Search songs..." onkeyup="filterLib()">
 <div id="library-container"></div>
 </div>
 
@@ -74,12 +77,20 @@ select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 
 <div id="status-box"><span id="status-text"></span></div>
 
 <script>
+function filterLib(){
+ let q=document.getElementById('libSearch').value.toLowerCase();
+ document.querySelectorAll('.lib-item').forEach(e=>{
+  e.style.display=e.innerText.toLowerCase().includes(q)?'flex':'none';
+ });
+}
+
 setInterval(()=>{
  fetch('/status').then(r=>r.json()).then(d=>{
   document.getElementById('status-text').innerText=d.text+' '+d.progress+'%';
  });
 },1000);
 </script>
+
 </body>
 </html>
 '''
@@ -87,15 +98,17 @@ setInterval(()=>{
 
 @app.route('/')
 def index():
-    session['setlist'] = []  # clear old broken data once
+    session.setdefault('setlist', [])
     dbx = get_dbx()
     folders = []
+
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
         except:
             pass
+
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
 
@@ -103,21 +116,31 @@ def index():
 def update_library():
     dbx = get_dbx()
     path = request.form.get('folder_path')
+
     if not dbx or not path:
         return ""
 
     try:
         res = dbx.files_list_folder(path)
         out = ""
+        seen = set()
 
         for e in res.entries:
             if isinstance(e, dropbox.files.FolderMetadata):
                 sub = dbx.files_list_folder(e.path_lower)
+
                 for f in sub.entries:
                     if f.name.lower().endswith('.pdf'):
+                        key = f.name.lower()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+
                         safe = html.escape(f.name)
                         payload = json.dumps({"name": f.name, "path": f.path_lower})
-                        out += f"<div class='item'><span>{safe}</span><button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
+
+                        out += f"<div class='lib-item item'><span>{safe}</span>\
+                        <button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
 
         return out
 
@@ -163,20 +186,16 @@ def build_worker(setlist, set_name):
     instrument_map = {}
 
     for song in setlist:
-        try:
-            path = song.get("path")
-            if not path:
-                continue
-
-            parts = path.split('/')
-            if len(parts) < 3:
-                continue
-
-            instrument = parts[-2]
-            instrument_map.setdefault(instrument, []).append(path)
-
-        except:
+        path = song.get("path")
+        if not path:
             continue
+
+        parts = path.split('/')
+        if len(parts) < 3:
+            continue
+
+        instrument = parts[-2]
+        instrument_map.setdefault(instrument, []).append(path)
 
     if not instrument_map:
         BUILD_STATUS.update({"running": False, "text": "No valid files"})
