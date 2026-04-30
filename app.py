@@ -9,8 +9,6 @@ APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
-LIB_CACHE = {}
-REG_CACHE = {}
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
 
@@ -19,6 +17,45 @@ def get_dbx():
     if not refresh_token or not APP_KEY or not APP_SECRET:
         return None
     return dropbox.Dropbox(oauth2_refresh_token=refresh_token, app_key=APP_KEY, app_secret=APP_SECRET)
+
+
+HTML_LOGIN_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PoW Band PDF Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+body {margin:0;font-family:'Poppins',sans-serif;background:radial-gradient(circle at top,#0f172a,#020617);color:white;display:flex;align-items:center;justify-content:center;height:100vh;}
+.container {width:100%;max-width:400px;background:rgba(255,255,255,0.05);backdrop-filter:blur(20px);border-radius:20px;padding:30px;box-shadow:0 0 40px rgba(255,215,0,0.15);text-align:center;}
+.logo {width:120px;margin-bottom:15px;}
+h1 {font-weight:600;margin-bottom:10px;}
+.subtitle {color:#aaa;font-size:14px;margin-bottom:25px;}
+.input {width:100%;padding:14px;margin-bottom:15px;border:none;border-radius:10px;background:rgba(255,255,255,0.08);color:white;}
+.input:focus {outline:none;box-shadow:0 0 0 2px gold;}
+.button {width:100%;padding:14px;border:none;border-radius:10px;background:linear-gradient(135deg,gold,#c9a100);color:black;font-weight:600;cursor:pointer;transition:0.2s;}
+.button:hover {transform:translateY(-2px);box-shadow:0 10px 20px rgba(255,215,0,0.3);} 
+.footer {margin-top:15px;font-size:12px;color:#888;}
+.error {color:#ff6b6b;margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="container">
+<img src="/static/logo.png" class="logo">
+<h1>PoW Band PDF Portal</h1>
+<div class="subtitle">Create. Organize. Perform.</div>
+{% if error %}<div class="error">{{error}}</div>{% endif %}
+<form method="POST">
+<input class="input" type="password" name="password" placeholder="Enter Password" required>
+<button class="button">Sign In</button>
+</form>
+<div class="footer">Secure access to your band's PDF library</div>
+</div>
+</body>
+</html>
+'''
 
 
 @app.before_request
@@ -33,18 +70,21 @@ def require_login():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    error = None
     if request.method == "POST":
         if request.form.get("password") == APP_PASSWORD:
             session["auth"] = True
             return redirect(url_for("index"))
-    return '<form method="POST"><input name="password" type="password"><button>Login</button></form>'
+        else:
+            error = "Incorrect password"
+    return render_template_string(HTML_LOGIN_TEMPLATE, error=error)
 
 
 def render_setlist_html(setlist):
-    html_out = ""
+    out = ""
     for i, song in enumerate(setlist):
         safe = html.escape(song, quote=True)
-        html_out += f'''
+        out += f'''
         <div style="display:flex; justify-content:space-between; padding:10px; border-bottom:1px solid #eee; align-items:center;">
             <span>{i+1}. {safe}</span>
             <div>
@@ -53,7 +93,7 @@ def render_setlist_html(setlist):
                 <button hx-post="/remove" name="song" value="{safe}" hx-target="#setlist-inner">×</button>
             </div>
         </div>'''
-    return html_out if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
+    return out if setlist else '<p style="color:#999; padding:10px;">No songs selected.</p>'
 
 
 HTML_TEMPLATE = '''
@@ -92,18 +132,7 @@ select, input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 
     </div>
 
     <div class="card">
-        <h3>3. Regimental Marches</h3>
-        <input id="regSearch" placeholder="Search" onkeyup="filterReg()">
-        <div id="regimental-container"></div>
-<script>
-window.addEventListener("load", function() {
-    htmx.ajax("POST", "/update-regimental", "#regimental-container");
-});
-</script>
-    </div>
-
-    <div class="card">
-        <h3>4. Your Setlist</h3>
+        <h3>3. Your Setlist</h3>
         <div id="setlist-inner">{{ setlist_html|safe }}</div>
         <button hx-post="/clear" hx-target="#setlist-inner">Clear All</button>
     </div>
@@ -111,7 +140,7 @@ window.addEventListener("load", function() {
     <form action="/build" method="POST">
         <input type="hidden" id="active_folder" name="active_folder">
         <input type="text" name="set_name" placeholder="Output Folder Name" required>
-                <button class="build-btn" type="submit">BUILD</button>
+        <button class="build-btn" type="submit">BUILD</button>
     </form>
 
     <div id="status-box">
@@ -122,12 +151,6 @@ window.addEventListener("load", function() {
 function filterLib(){
  let q=document.getElementById('libSearch').value.toLowerCase();
  document.querySelectorAll('.lib-item').forEach(e=>{
-  e.style.display=e.innerText.toLowerCase().includes(q)?'flex':'none';
- });
-}
-function filterReg(){
- let q=document.getElementById('regSearch').value.toLowerCase();
- document.querySelectorAll('.reg-item').forEach(e=>{
   e.style.display=e.innerText.toLowerCase().includes(q)?'flex':'none';
  });
 }
@@ -175,27 +198,11 @@ def update_library():
                     out+=f'<div class="lib-item item"><span>{safe}</span><button class="btn-add" name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button></div>'
     return out
 
-@app.route('/update-regimental', methods=['POST'])
-def update_regimental():
-    dbx=get_dbx()
-    if not dbx: return ""
-    res=dbx.files_list_folder("Regimental marches")
-    out=""
-    seen=set()
-    for f in res.entries:
-        if f.name.lower().endswith('.pdf'):
-            k=f.name.lower()
-            if k in seen: continue
-            seen.add(k)
-            safe=html.escape(f.name)
-            out+=f'<div class="reg-item item"><span>{safe}</span><button class="btn-add" name="song" value="{safe}" hx-post="/add" hx-target="#setlist-inner">+</button></div>'
-    return out
-
 @app.route('/add', methods=['POST'])
 def add():
     song=request.form.get('song')
     lst=session.get('setlist',[])
-    if song and song not in lst:
+    if song:
         lst.append(song)
     session['setlist']=lst
     return render_setlist_html(lst)
@@ -223,6 +230,7 @@ def clear():
     session['setlist']=[]
     return render_setlist_html([])
 
+
 def build_worker(setlist,set_name,active_folder):
     dbx=get_dbx()
     BUILD_STATUS.update({"running":True,"progress":0})
@@ -233,9 +241,12 @@ def build_worker(setlist,set_name,active_folder):
         items=dbx.files_list_folder(f.path_lower).entries
         pdf_map={e.name.lower():e.path_lower for e in items if e.name.lower().endswith('.pdf')}
         for song in setlist:
-            if song.lower() in pdf_map:
-                _,r=dbx.files_download(pdf_map[song.lower()])
+            key=song.lower()
+            if key in pdf_map:
+                _,r=dbx.files_download(pdf_map[key])
                 writer.append(io.BytesIO(r.content))
+        if not writer.pages:
+            continue
         out=io.BytesIO()
         writer.write(out)
         out.seek(0)
