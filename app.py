@@ -7,7 +7,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "change-this")
 
 APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
@@ -92,8 +92,6 @@ button {
 
 @app.before_request
 def protect():
-    if not APP_PASSWORD:
-        return
     if request.endpoint in ['login', 'static', 'status']:
         return
     if not session.get("auth"):
