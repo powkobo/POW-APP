@@ -23,9 +23,10 @@ def render_setlist_html(setlist):
     for i, s in enumerate(setlist):
         name = html.escape(s.get("name", ""))
         payload = json.dumps(s)
-        out += f"<div style='display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;'>\\
-        <span>{i+1}. {name}</span>\\
-        <button hx-post='/remove' hx-vals='{payload}' hx-target='#setlist-inner'>×</button></div>"
+        out += f'''<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
+        <span>{i+1}. {name}</span>
+        <button hx-post="/remove" hx-vals='{payload}' hx-target="#setlist-inner">×</button>
+        </div>'''
     return out or "<p style='color:#999'>No songs selected</p>"
 
 
