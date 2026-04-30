@@ -24,9 +24,9 @@ def render_setlist_html(setlist):
         name = html.escape(s.get("name", ""))
         payload = json.dumps(s)
         out += f'''<div style="display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #eee;">
-        <span>{i+1}. {name}</span>
-        <button hx-post="/remove" hx-vals='{payload}' hx-target="#setlist-inner">×</button>
-        </div>'''
+<span>{i+1}. {name}</span>
+<button hx-post="/remove" hx-vals='{payload}' hx-target="#setlist-inner">×</button>
+</div>'''
     return out or "<p style='color:#999'>No songs selected</p>"
 
 
@@ -102,14 +102,12 @@ def index():
     session.setdefault('setlist', [])
     dbx = get_dbx()
     folders = []
-
     if dbx:
         try:
             res = dbx.files_list_folder("")
             folders = [e for e in res.entries if isinstance(e, dropbox.files.FolderMetadata)]
         except:
             pass
-
     return render_template_string(HTML_TEMPLATE, folders=folders, setlist_html=render_setlist_html(session['setlist']))
 
 
@@ -140,8 +138,10 @@ def update_library():
                         safe = html.escape(f.name)
                         payload = json.dumps({"name": f.name, "path": f.path_lower})
 
-                        out += f"<div class='lib-item item'><span>{safe}</span>\\
-                        <button class='btn-add' hx-post='/add' hx-vals='{payload}' hx-target='#setlist-inner'>+</button></div>"
+                        out += f'''<div class="lib-item item">
+<span>{safe}</span>
+<button class="btn-add" hx-post="/add" hx-vals='{payload}' hx-target="#setlist-inner">+</button>
+</div>'''
 
         return out
 
@@ -188,23 +188,18 @@ def build_worker(setlist, set_name):
 
     BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting..."})
 
-    # determine root from first song path
     try:
         first_path = setlist[0].get("path")
         root = "/" + first_path.split("/")[1]
-    except Exception:
+    except:
         BUILD_STATUS.update({"running": False, "text": "Path error"})
         return
 
     try:
         res = dbx.files_list_folder(root)
         folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
-    except Exception:
+    except:
         BUILD_STATUS.update({"running": False, "text": "Folder error"})
-        return
-
-    if not folders:
-        BUILD_STATUS.update({"running": False, "text": "No instrument folders"})
         return
 
     total = len(folders)
@@ -215,7 +210,7 @@ def build_worker(setlist, set_name):
         try:
             items = dbx.files_list_folder(folder.path_lower).entries
             pdf_map = {e.name.lower(): e.path_lower for e in items if e.name.lower().endswith('.pdf')}
-        except Exception:
+        except:
             continue
 
         for song in setlist:
@@ -225,7 +220,7 @@ def build_worker(setlist, set_name):
                 try:
                     _, r = dbx.files_download(pdf_map[name])
                     writer.append(io.BytesIO(r.content))
-                except Exception:
+                except:
                     continue
 
         if not writer.pages:
@@ -241,7 +236,7 @@ def build_worker(setlist, set_name):
                 f"/Generated/{set_name}/{folder.name}-{set_name}.pdf",
                 mode=dropbox.files.WriteMode.overwrite
             )
-        except Exception:
+        except:
             continue
 
         BUILD_STATUS.update({
