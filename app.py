@@ -15,6 +15,14 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "admin123")
 
 BUILD_STATUS = {"running": False, "progress": 0, "text": "Idle"}
 
+# Folders to ignore
+IGNORE_FOLDERS = {
+    "generated",
+    "kobo",
+    "users",
+    "usersannotations",
+}
+
 
 def get_dbx():
     return dropbox.Dropbox(
@@ -186,8 +194,11 @@ document.addEventListener("drop",e=>{
   let list=[...document.querySelectorAll(".item")]
   let from=list.indexOf(dragged)
   let to=list.indexOf(el)
-  fetch('/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from,to})})
-  .then(()=>location.reload())
+  fetch('/reorder',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({from,to})
+  }).then(()=>location.reload())
  }
 })
 
@@ -225,9 +236,18 @@ def index():
 
     if dbx:
         res = dbx.files_list_folder("")
-        folders = [f for f in res.entries if isinstance(f, dropbox.files.FolderMetadata)]
 
-    return render_template_string(HTML, folders=folders, setlist=render_setlist(session["setlist"]))
+        folders = [
+            f for f in res.entries
+            if isinstance(f, dropbox.files.FolderMetadata)
+            and f.name.lower() not in IGNORE_FOLDERS
+        ]
+
+    return render_template_string(
+        HTML,
+        folders=folders,
+        setlist=render_setlist(session["setlist"])
+    )
 
 
 # ---------------- LIBRARY ----------------
@@ -240,57 +260,101 @@ def lib():
     out = ""
 
     for f in dbx.files_list_folder(path).entries:
+
+        # ignore unwanted folders
+        if (
+            isinstance(f, dropbox.files.FolderMetadata)
+            and f.name.lower() in IGNORE_FOLDERS
+        ):
+            continue
+
         if isinstance(f, dropbox.files.FolderMetadata):
             for p in dbx.files_list_folder(f.path_lower).entries:
                 if p.name.lower().endswith(".pdf"):
                     if p.name in seen:
                         continue
+
                     seen.add(p.name)
-                    payload = json.dumps({"name": p.name, "path": p.path_lower})
-                    out += f'<div class="lib-item item"><span>{html.escape(p.name)}</span><button hx-post="/add" hx-vals=\'{payload}\' hx-target="#setlist">+</button></div>'
+
+                    payload = json.dumps({
+                        "name": p.name,
+                        "path": p.path_lower
+                    })
+
+                    out += f'''
+<div class="lib-item item">
+<span>{html.escape(p.name)}</span>
+<button
+hx-post="/add"
+hx-vals=\'{payload}\'
+hx-target="#setlist"
+>+</button>
+</div>
+'''
+
     return out
 
 
 @app.route("/add", methods=["POST"])
 def add():
     lst = session.get("setlist", [])
-    lst.append({"name": request.form["name"], "path": request.form["path"]})
+
+    lst.append({
+        "name": request.form["name"],
+        "path": request.form["path"]
+    })
+
     session["setlist"] = lst
+
     return render_setlist(lst)
 
 
 @app.route("/remove", methods=["POST"])
 def remove():
     lst = session.get("setlist", [])
+
     name = request.form.get("name")
     path = request.form.get("path")
-    lst = [s for s in lst if not (s["name"] == name and s["path"] == path)]
+
+    lst = [
+        s for s in lst
+        if not (s["name"] == name and s["path"] == path)
+    ]
+
     session["setlist"] = lst
+
     return render_setlist(lst)
 
 
 @app.route("/move", methods=["POST"])
 def move():
     lst = session.get("setlist", [])
+
     i = int(request.form["i"])
     d = request.form["d"]
 
     if d == "up" and i > 0:
-        lst[i], lst[i-1] = lst[i-1], lst[i]
-    elif d == "down" and i < len(lst)-1:
-        lst[i], lst[i+1] = lst[i+1], lst[i]
+        lst[i], lst[i - 1] = lst[i - 1], lst[i]
+
+    elif d == "down" and i < len(lst) - 1:
+        lst[i], lst[i + 1] = lst[i + 1], lst[i]
 
     session["setlist"] = lst
+
     return render_setlist(lst)
 
 
 @app.route("/reorder", methods=["POST"])
 def reorder():
     data = request.json
+
     lst = session.get("setlist", [])
+
     item = lst.pop(data["from"])
     lst.insert(data["to"], item)
+
     session["setlist"] = lst
+
     return "ok"
 
 
@@ -298,29 +362,57 @@ def reorder():
 
 def build_worker(lst, name):
     dbx = get_dbx()
-    BUILD_STATUS.update({"running": True, "progress": 0, "text": "Starting"})
+
+    BUILD_STATUS.update({
+        "running": True,
+        "progress": 0,
+        "text": "Starting"
+    })
 
     if not lst:
-        BUILD_STATUS.update({"running": False, "text": "No songs"})
+        BUILD_STATUS.update({
+            "running": False,
+            "text": "No songs"
+        })
         return
 
     root = "/" + lst[0]["path"].split("/")[1]
-    folders = [f for f in dbx.files_list_folder(root).entries if isinstance(f, dropbox.files.FolderMetadata)]
+
+    folders = [
+        f for f in dbx.files_list_folder(root).entries
+        if isinstance(f, dropbox.files.FolderMetadata)
+        and f.name.lower() not in IGNORE_FOLDERS
+    ]
 
     for i, f in enumerate(folders):
+
         writer = PdfWriter()
+
         items = dbx.files_list_folder(f.path_lower).entries
-        mp = {x.name.lower(): x.path_lower for x in items if x.name.lower().endswith(".pdf")}
+
+        mp = {
+            x.name.lower(): x.path_lower
+            for x in items
+            if x.name.lower().endswith(".pdf")
+        }
 
         for s in lst:
             if s["name"].lower() in mp:
-                _, r = dbx.files_download(mp[s["name"].lower()])
+
+                _, r = dbx.files_download(
+                    mp[s["name"].lower()]
+                )
+
                 writer.append(io.BytesIO(r.content))
 
         if writer.pages:
+
             out = io.BytesIO()
+
             writer.write(out)
+
             out.seek(0)
+
             dbx.files_upload(
                 out.read(),
                 f"/Generated/{name}/{f.name}-{name}.pdf",
@@ -332,15 +424,23 @@ def build_worker(lst, name):
             "text": f.name
         })
 
-    BUILD_STATUS.update({"running": False, "text": "Done"})
+    BUILD_STATUS.update({
+        "running": False,
+        "text": "Done"
+    })
 
 
 @app.route("/build", methods=["POST"])
 def build():
+
     threading.Thread(
         target=build_worker,
-        args=(session.get("setlist", []), request.form.get("set_name"))
+        args=(
+            session.get("setlist", []),
+            request.form.get("set_name")
+        )
     ).start()
+
     return redirect("/")
 
 
